@@ -25,6 +25,28 @@ try {
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $fixtureRoot 'release\release-manifest.json') | ConvertFrom-Json
     if ($manifest.assets.Count -ne 2) { throw 'Expected two collected installer assets' }
     if (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'release\SHA256SUMS.txt'))) { throw 'Missing checksum file' }
+
+    $notesSource = Join-Path $fixtureRoot 'release-notes-source.md'
+    $notesOutput = Join-Path $fixtureRoot 'public-release-notes.md'
+    @'
+Commit: {{RELEASE_COMMIT}}
+Run: {{GITHUB_ACTIONS_RUN_URL}}
+Installer: {{WINDOWS_INSTALLER_ASSET}}
+SHA-256: {{WINDOWS_INSTALLER_SHA256}}
+'@ | Set-Content -LiteralPath $notesSource -Encoding utf8NoBOM
+    & (Join-Path $root 'scripts\New-PublicReleaseNotes.ps1') `
+        -SourcePath $notesSource `
+        -ManifestPath (Join-Path $fixtureRoot 'release\release-manifest.json') `
+        -OutputPath $notesOutput `
+        -RunUrl 'https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/123456' `
+        -ExpectedVersion '0.1.0-test' `
+        -ExpectedCommit '0123456789abcdef0123456789abcdef01234567'
+
+    $publicNotes = Get-Content -Raw -LiteralPath $notesOutput
+    if ($publicNotes.Contains('{{')) { throw 'Public release notes retain an unresolved token' }
+    if (-not $publicNotes.Contains('0123456789abcdef0123456789abcdef01234567')) { throw 'Public release notes omit the manifest commit' }
+    if (-not $publicNotes.Contains('CrowClaw-test.exe')) { throw 'Public release notes omit the Windows installer name' }
+    if (-not $publicNotes.Contains([string]($manifest.assets | Where-Object name -eq 'CrowClaw-test.exe').sha256)) { throw 'Public release notes omit the Windows installer hash' }
     'Release script tests passed.'
 } finally {
     if (Test-Path -LiteralPath $fixtureRoot) {

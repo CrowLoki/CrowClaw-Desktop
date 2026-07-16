@@ -79,6 +79,18 @@ jobs:
             if (Select-String -LiteralPath $notesPath -SimpleMatch "PENDING-BEFORE-TAG" -Quiet) {
               throw "Release notes still contain PENDING-BEFORE-TAG acceptance placeholders."
             }
+            $requiredTokens = @(
+              "{{RELEASE_COMMIT}}",
+              "{{GITHUB_ACTIONS_RUN_URL}}",
+              "{{WINDOWS_INSTALLER_ASSET}}",
+              "{{WINDOWS_INSTALLER_SHA256}}"
+            )
+            $notes = Get-Content -Raw -LiteralPath $notesPath
+            foreach ($token in $requiredTokens) {
+              if (-not $notes.Contains($token)) {
+                throw "Release notes are missing workflow evidence token '$token'."
+              }
+            }
           }
 
           "release_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -104,6 +116,26 @@ jobs:
         shell: pwsh
         run: ./scripts/Collect-ReleaseArtifacts.ps1
 
+      - name: Bind public release notes to verified assets
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: public_notes
+        shell: pwsh
+        env:
+          RELEASE_NOTES_SOURCE: ${{ steps.release_identity.outputs.release_notes_path }}
+          RELEASE_TAG: ${{ steps.release_identity.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release_identity.outputs.release_version }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "CrowClaw-$env:RELEASE_TAG-release-notes.md"
+          $headCommit = (git rev-parse HEAD).Trim()
+          ./scripts/New-PublicReleaseNotes.ps1 `
+            -SourcePath $env:RELEASE_NOTES_SOURCE `
+            -ManifestPath "release/release-manifest.json" `
+            -OutputPath $output `
+            -RunUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" `
+            -ExpectedVersion $env:RELEASE_VERSION `
+            -ExpectedCommit $headCommit
+          "public_release_notes_path=$output" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Upload verified release bundle
         uses: actions/upload-artifact@v7
         with:
@@ -118,7 +150,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_identity.outputs.release_tag }}
-          RELEASE_NOTES_PATH: ${{ steps.release_identity.outputs.release_notes_path }}
+          RELEASE_NOTES_PATH: ${{ steps.public_notes.outputs.public_release_notes_path }}
         run: |
           gh release create "$env:RELEASE_TAG" release/* `
             --verify-tag `
