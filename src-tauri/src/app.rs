@@ -848,11 +848,7 @@ pub async fn crowclaw_action_decide(
             .map_err(display_error)?;
     }
 
-    let before_tool_messages = session
-        .messages
-        .iter()
-        .filter(|message| message.role == ChatRole::Tool)
-        .count();
+    let before_message_len = session.messages.len();
     let run = live
         .runtime
         .run_until_blocked(&mut session, &live.cancellation)
@@ -862,7 +858,7 @@ pub async fn crowclaw_action_decide(
         memory = record_tool_execution(
             &state.storage,
             &request.action_id,
-            &session.messages[before_tool_messages.min(session.messages.len())..],
+            &session.messages[before_message_len.min(session.messages.len())..],
         )?;
     }
     drop(session);
@@ -1011,7 +1007,11 @@ async fn test_connection(request: &ModelEndpointDraft) -> Result<ConnectionTestR
     let client = OpenAiCompatibleClient::new(config_for(request)).map_err(display_error)?;
     let cancellation = CancellationToken::new();
     let health = client.health(&cancellation).await.map_err(display_error)?;
-    let models = client.list_models(&cancellation).await.unwrap_or_default();
+    let models = if health.state == ProviderHealthState::Unavailable {
+        Vec::new()
+    } else {
+        client.list_models(&cancellation).await.unwrap_or_default()
+    };
     let resolved_model = if models.iter().any(|model| model.id == request.model.trim()) {
         request.model.trim().into()
     } else {
