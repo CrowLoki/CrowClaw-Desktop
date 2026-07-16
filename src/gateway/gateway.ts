@@ -18,6 +18,9 @@ class UnavailableGateway implements CrowClawGateway {
   cancelTask = async () => this.unavailable();
   decideAction = async () => this.unavailable();
   saveSettings = async () => this.unavailable();
+  listCrowQuantMemories = async () => this.unavailable();
+  rememberCrowQuant = async () => this.unavailable();
+  recallCrowQuant = async () => this.unavailable();
 }
 
 export function createCrowClawGateway(): CrowClawGateway {

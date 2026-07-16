@@ -109,6 +109,21 @@ export type MemoryRecord = {
   tags: string[];
 };
 
+export type CrowQuantMemory = {
+  id: string;
+  text: string;
+  createdAt: string;
+  originalBytes: number;
+  compressedBytes: number;
+  compressionRatio: number;
+  algorithm: string;
+};
+
+export type CrowQuantSearchHit = {
+  memory: CrowQuantMemory;
+  score: number;
+};
+
 export type PermissionMode = "ask" | "allow-session" | "deny";
 
 export type AppSettings = {
@@ -171,4 +186,7 @@ export interface CrowClawGateway {
   cancelTask(taskId: string): Promise<TaskCancellationResult>;
   decideAction(actionId: string, decision: ActionDecision): Promise<ActionDecisionResult>;
   saveSettings(settings: AppSettings): Promise<AppSettings>;
+  listCrowQuantMemories(): Promise<CrowQuantMemory[]>;
+  rememberCrowQuant(text: string): Promise<CrowQuantMemory>;
+  recallCrowQuant(query: string, limit: number): Promise<CrowQuantSearchHit[]>;
 }
