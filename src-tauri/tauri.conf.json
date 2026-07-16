@@ -27,8 +27,7 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis",
-      "msi"
+      "nsis"
     ],
     "publisher": "CrowClaw",
     "homepage": "https://github.com/CrowLoki/CrowClaw-Desktop",
