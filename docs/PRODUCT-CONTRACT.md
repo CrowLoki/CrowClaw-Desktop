@@ -54,3 +54,30 @@ These are not guessed by the implementation:
 - which additional accounts or systems Crow chooses to connect;
 - any public Orion experience;
 - any scientific claim or research-publication decision.
+
+## Alpha 2 scoped CrowQuant integration
+
+The Alpha 1 boundary above remains part of the release history. Alpha 2 adds one bounded integration to CrowClaw itself: a local CrowQuant-compatible memory path. It does not import, rewrite, or modify the separate CrowQuant repository.
+
+The Alpha 2 experience must:
+
+1. Let the user enter text to remember from CrowClaw's Memory surface.
+2. Convert that text to a deterministic local vector and store it as a compressed CrowQuant-compatible block alongside the source text and required metadata.
+3. Let the user enter a query and show ranked, relevant stored records from the local database.
+4. Show enough user-visible detail to establish that the memory was stored and retrieved, including compression information.
+5. Preserve those records and their retrieval after CrowClaw is closed and reopened.
+6. Operate in the installed application without Python, a paid service, a remote account, a source checkout, or the separate CrowQuant repository.
+
+### Alpha 2 packaged acceptance test
+
+From a fresh Windows installation:
+
+1. Install and launch the Alpha 2 CrowClaw installer.
+2. Open Memory and store at least two meaningfully different text records.
+3. Verify CrowClaw reports durable storage and non-empty compression metadata for each record.
+4. Query for wording related to one record and verify that record ranks above the unrelated record.
+5. Close CrowClaw completely, relaunch it, repeat the query, and verify the same stored record is returned.
+6. Verify the flow uses no Python process, network service, or external CrowQuant checkout.
+7. Uninstall and verify the documented application-data retention behavior remains unchanged.
+
+No Alpha 2 release may claim this test passes until it has been executed against the packaged installer and its exact evidence has replaced the pending fields in the Alpha 2 release notes.
