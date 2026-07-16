@@ -138,13 +138,14 @@ export type ChatTurnResult = {
   conversation: Conversation;
   summary: ConversationSummary;
   task: AgentTask;
-  pendingAction: PendingAction | null;
+  pendingActions: PendingAction[];
 };
 
 export type ActionDecisionResult = {
   conversation: Conversation;
   summary: ConversationSummary;
   task: AgentTask;
+  pendingActions: PendingAction[];
   memory: MemoryRecord | null;
 };
 

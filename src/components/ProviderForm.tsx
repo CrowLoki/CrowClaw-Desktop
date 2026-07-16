@@ -1,5 +1,5 @@
 import { CheckCircle2, LoaderCircle, Radio, Server, WifiOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ConnectionTestResult,
   DiscoveredEndpoint,
@@ -64,8 +64,16 @@ export function ProviderForm({
   const [testing, setTesting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const userModified = useRef(false);
+
+  useEffect(() => {
+    if (discovered.length === 0 || userModified.current) return;
+    setDraft(discovered[0]);
+    setTestResult(null);
+  }, [discovered]);
 
   function updateDraft(patch: Partial<ModelEndpointDraft>) {
+    userModified.current = true;
     setDraft((current) => ({ ...current, ...patch }));
     setTestResult(null);
     setError(null);
@@ -170,7 +178,7 @@ export function ProviderForm({
         </label>
         {draft.provider === "custom" && (
           <label className="field field--wide">
-            <span>API key <small>Optional; stored by the native credential service</small></span>
+            <span>API key <small>Optional; kept only for this app session</small></span>
             <input
               type="password"
               value={draft.apiKey ?? ""}

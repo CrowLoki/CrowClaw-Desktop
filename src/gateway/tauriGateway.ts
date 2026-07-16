@@ -30,33 +30,46 @@ export const TAURI_COMMANDS = {
   saveSettings: "crowclaw_settings_save",
 } as const;
 
+async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (cause) {
+    if (cause instanceof Error) throw cause;
+    if (typeof cause === "string") throw new Error(cause);
+    if (cause && typeof cause === "object" && "message" in cause) {
+      throw new Error(String(cause.message));
+    }
+    throw new Error(`CrowClaw native command ${command} failed.`);
+  }
+}
+
 export function createTauriGateway(): CrowClawGateway {
   return {
-    bootstrap: () => invoke<AppBootstrap>(TAURI_COMMANDS.bootstrap),
-    discoverEndpoints: () => invoke<DiscoveredEndpoint[]>(TAURI_COMMANDS.discoverEndpoints),
+    bootstrap: () => invokeNative<AppBootstrap>(TAURI_COMMANDS.bootstrap),
+    discoverEndpoints: () => invokeNative<DiscoveredEndpoint[]>(TAURI_COMMANDS.discoverEndpoints),
     testConnection: (draft: ModelEndpointDraft) =>
-      invoke<ConnectionTestResult>(TAURI_COMMANDS.testConnection, { request: draft }),
+      invokeNative<ConnectionTestResult>(TAURI_COMMANDS.testConnection, { request: draft }),
     connectModel: (draft: ModelEndpointDraft) =>
-      invoke<ModelConnection>(TAURI_COMMANDS.connectModel, { request: draft }),
+      invokeNative<ModelConnection>(TAURI_COMMANDS.connectModel, { request: draft }),
     createConversation: () =>
-      invoke<{ conversation: Conversation; summary: ConversationSummary }>(
+      invokeNative<{ conversation: Conversation; summary: ConversationSummary }>(
         TAURI_COMMANDS.createConversation,
       ),
     getConversation: (conversationId: string) =>
-      invoke<Conversation>(TAURI_COMMANDS.getConversation, { request: { conversationId } }),
-    selectFolder: () => invoke<SelectedFolder | null>(TAURI_COMMANDS.selectFolder),
+      invokeNative<Conversation>(TAURI_COMMANDS.getConversation, { request: { conversationId } }),
+    selectFolder: () => invokeNative<SelectedFolder | null>(TAURI_COMMANDS.selectFolder),
     sendMessage: (conversationId: string, content: string, selectedFolder: SelectedFolder | null) =>
-      invoke<ChatTurnResult>(TAURI_COMMANDS.sendMessage, {
+      invokeNative<ChatTurnResult>(TAURI_COMMANDS.sendMessage, {
         request: { conversationId, content, selectedFolder },
       }),
     cancelTask: (taskId: string) =>
-      invoke<TaskCancellationResult>(TAURI_COMMANDS.cancelTask, { request: { taskId } }),
+      invokeNative<TaskCancellationResult>(TAURI_COMMANDS.cancelTask, { request: { taskId } }),
     decideAction: (actionId: string, decision: ActionDecision) =>
-      invoke<ActionDecisionResult>(TAURI_COMMANDS.decideAction, {
+      invokeNative<ActionDecisionResult>(TAURI_COMMANDS.decideAction, {
         request: { actionId, decision },
       }),
     saveSettings: (settings: AppSettings) =>
-      invoke<AppSettings>(TAURI_COMMANDS.saveSettings, { request: settings }),
+      invokeNative<AppSettings>(TAURI_COMMANDS.saveSettings, { request: settings }),
   };
 }
 

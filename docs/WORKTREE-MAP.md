@@ -10,4 +10,4 @@ Every component is developed in a separate branch and physical Git worktree.
 | Windows release | `codex/windows-release` | installer configuration, release scripts, CI, packaging docs | Fresh-checkout build, installer, uninstall, checksums and honest release notes |
 | Integration | `main` | shared wiring only | Merge verified component commits and pass packaged end-to-end acceptance |
 
-Component worktrees live outside the repository checkout under `C:\Users\djdar\Documents\CrowClaw-Worktrees\`. They are disposable checkouts; branches and commits are the durable record.
+Component worktrees live outside the repository checkout in a developer-selected worktree directory. They are disposable checkouts; branches and commits are the durable record.

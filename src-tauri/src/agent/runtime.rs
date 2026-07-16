@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tools::{
     builtin_tool_definitions, ApprovalDecision, ApprovalStatus, ApprovalToken, ProposedAction,
-    ToolExecution, ToolExecutor, ToolRequest,
+    ToolExecutor, ToolRequest,
 };
 
 use super::{

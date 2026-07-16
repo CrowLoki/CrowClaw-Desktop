@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { AppShell, type AppView } from "./components/AppShell";
 import { ApprovalDialog } from "./components/ApprovalDialog";
@@ -101,6 +102,22 @@ export function App({ gateway = defaultGateway }: AppProps) {
     void loadApp();
   }, [loadApp]);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    let active = true;
+    void listen<AgentTask>("crowclaw://task-updated", ({ payload }) => {
+      setBootstrap((current) => current ? { ...current, tasks: upsertTask(current.tasks, payload) } : current);
+    }).then((dispose) => {
+      if (active) unlisten = dispose;
+      else dispose();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
   const discoverEndpoints = useCallback(async () => {
     const endpoints = await gateway.discoverEndpoints();
     setDiscovered(endpoints);
@@ -163,9 +180,10 @@ export function App({ gateway = defaultGateway }: AppProps) {
           ...current,
           conversations: upsertSummary(current.conversations, result.summary),
           tasks: upsertTask(current.tasks, result.task),
-          pendingActions: result.pendingAction
-            ? [result.pendingAction, ...current.pendingActions.filter(({ id }) => id !== result.pendingAction?.id)]
-            : current.pendingActions,
+          pendingActions: [
+            ...result.pendingActions,
+            ...current.pendingActions.filter(({ taskId }) => taskId !== result.task.id),
+          ],
         };
       });
     } catch (cause) {
@@ -213,7 +231,12 @@ export function App({ gateway = defaultGateway }: AppProps) {
           ...current,
           conversations: upsertSummary(current.conversations, result.summary),
           tasks: upsertTask(current.tasks, result.task),
-          pendingActions: current.pendingActions.filter(({ id }) => id !== action.id),
+          pendingActions: [
+            ...result.pendingActions,
+            ...current.pendingActions.filter(
+              ({ id, taskId }) => id !== action.id && taskId !== result.task.id,
+            ),
+          ],
           memories: result.memory ? [result.memory, ...current.memories] : current.memories,
         };
       });

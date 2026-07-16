@@ -344,7 +344,7 @@ export function createDevelopmentGateway(
         conversation,
         summary: summaryFor(conversation),
         task,
-        pendingAction,
+        pendingActions: pendingAction ? [pendingAction] : [],
       });
     },
 
@@ -428,7 +428,7 @@ export function createDevelopmentGateway(
           }
         : null;
       if (memory) memories = [memory, ...memories];
-      return clone({ conversation, summary: summaryFor(conversation), task, memory });
+      return clone({ conversation, summary: summaryFor(conversation), task, pendingActions: [], memory });
     },
 
     async saveSettings(nextSettings: AppSettings): Promise<AppSettings> {

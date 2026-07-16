@@ -17,7 +17,7 @@ use crate::agent::CancellationToken;
 
 use super::{
     approval::{ApprovalRegistry, ClaimedAction},
-    ActionId, ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
+    ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
     ProposedAction, ToolError, ToolExecution, ToolOutput, ToolRequest,
 };
 
