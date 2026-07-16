@@ -1,0 +1,13 @@
+script = """
+"""
+
+[setup.win32]
+script = '''
+.\scripts\Initialize-CrowClawWorktree.ps1
+'''
+
+[[actions]]
+name = "Validate CrowClaw worktree"
+icon = "test"
+command = ".\\scripts\\Test-CrowClawWorktree.ps1"
+platform = "win32"
