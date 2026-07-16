@@ -10,6 +10,8 @@ import type {
   ConversationMessage,
   ConversationSummary,
   CrowClawGateway,
+  CrowQuantMemory,
+  CrowQuantSearchHit,
   DiscoveredEndpoint,
   MemoryRecord,
   ModelConnection,
@@ -68,6 +70,21 @@ function now(): string {
 
 function createId(prefix: string, counter: number): string {
   return `${prefix}-${counter.toString().padStart(4, "0")}`;
+}
+
+function searchTerms(value: string): Set<string> {
+  return new Set(value.toLocaleLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+function similarityScore(query: string, text: string): number {
+  const queryTerms = searchTerms(query);
+  const textTerms = searchTerms(text);
+  if (queryTerms.size === 0 || textTerms.size === 0) return 0;
+  let overlap = 0;
+  queryTerms.forEach((term) => {
+    if (textTerms.has(term)) overlap += 1;
+  });
+  return overlap / Math.sqrt(queryTerms.size * textTerms.size);
 }
 
 function summaryFor(conversation: Conversation): ConversationSummary {
@@ -148,6 +165,7 @@ export function createDevelopmentGateway(
       tags: ["local", "permissions"],
     },
   ];
+  let crowQuantMemories: CrowQuantMemory[] = [];
 
   async function pause(): Promise<void> {
     if ((options.delayMs ?? 90) <= 0) return;
@@ -435,6 +453,42 @@ export function createDevelopmentGateway(
       await pause();
       settings = clone(nextSettings);
       return clone(settings);
+    },
+
+    async listCrowQuantMemories(): Promise<CrowQuantMemory[]> {
+      await pause();
+      return clone(crowQuantMemories);
+    },
+
+    async rememberCrowQuant(text: string): Promise<CrowQuantMemory> {
+      await pause();
+      const normalized = text.trim();
+      if (!normalized) throw new Error("Enter something for CrowQuant to remember.");
+      const originalBytes = 256 * Float32Array.BYTES_PER_ELEMENT;
+      const compressedBytes = 161;
+      const memory: CrowQuantMemory = {
+        id: createId("crowquant", ++counter),
+        text: normalized,
+        createdAt: now(),
+        originalBytes,
+        compressedBytes,
+        compressionRatio: originalBytes / compressedBytes,
+        algorithm: "CrowQuant WHT · 4-bit",
+      };
+      crowQuantMemories = [memory, ...crowQuantMemories];
+      return clone(memory);
+    },
+
+    async recallCrowQuant(query: string, limit: number): Promise<CrowQuantSearchHit[]> {
+      await pause();
+      const normalized = query.trim();
+      if (!normalized) throw new Error("Enter a query to recall CrowQuant memory.");
+      const boundedLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+      const hits = crowQuantMemories
+        .map((memory) => ({ memory, score: similarityScore(normalized, memory.text) }))
+        .sort((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
+        .slice(0, boundedLimit);
+      return clone(hits);
     },
   };
 }

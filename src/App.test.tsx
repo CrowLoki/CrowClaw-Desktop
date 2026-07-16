@@ -70,4 +70,33 @@ describe("CrowClaw desktop shell", () => {
     expect(await screen.findByText("Saved", { selector: ".section-stat" })).toBeVisible();
     expect(filePermission).toHaveValue("deny");
   });
+
+  it("stores and recalls real CrowQuant memory separately from activity records", async () => {
+    const user = userEvent.setup();
+    render(<App gateway={createDevelopmentGateway({ firstRun: false, delayMs: 0 })} />);
+
+    await user.click(await screen.findByRole("button", { name: /memory/i }));
+    expect(await screen.findByRole("heading", { name: /crowquant semantic memory/i })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /approved activity memory/i })).toBeVisible();
+
+    await user.type(
+      screen.getByRole("textbox", { name: /remember something/i }),
+      "The quantum lab uses local simulation evidence.",
+    );
+    await user.click(screen.getByRole("button", { name: /remember with crowquant/i }));
+
+    expect(await screen.findByText("Stored locally with CrowQuant.")).toBeVisible();
+    expect(screen.getByText("The quantum lab uses local simulation evidence.")).toBeVisible();
+    expect(screen.getByText(/CrowQuant WHT/i)).toBeVisible();
+
+    await user.type(
+      screen.getByRole("textbox", { name: /recall related memory/i }),
+      "quantum lab evidence",
+    );
+    await user.click(screen.getByRole("button", { name: /recall memory/i }));
+
+    expect(await screen.findByRole("heading", { name: /recall results/i })).toBeVisible();
+    expect(screen.getByText(/% match/i)).toBeVisible();
+    expect(screen.getByText("The quantum lab uses local simulation evidence.")).toBeVisible();
+  });
 });

@@ -307,7 +307,14 @@ export function App({ gateway = defaultGateway }: AppProps) {
       {view === "tasks" && (
         <TaskCenter tasks={bootstrap.tasks} cancellingTaskId={cancellingTaskId} onCancel={(id) => void cancelTask(id)} />
       )}
-      {view === "memory" && <MemoryView memories={bootstrap.memories} />}
+      {view === "memory" && (
+        <MemoryView
+          memories={bootstrap.memories}
+          listCrowQuantMemories={gateway.listCrowQuantMemories}
+          rememberCrowQuant={gateway.rememberCrowQuant}
+          recallCrowQuant={gateway.recallCrowQuant}
+        />
+      )}
       {view === "connections" && (
         <ConnectionsView
           connection={bootstrap.connection}

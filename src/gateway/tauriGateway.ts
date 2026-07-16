@@ -8,6 +8,8 @@ import type {
   ConnectionTestResult,
   Conversation,
   ConversationSummary,
+  CrowQuantMemory,
+  CrowQuantSearchHit,
   CrowClawGateway,
   DiscoveredEndpoint,
   ModelConnection,
@@ -28,6 +30,9 @@ export const TAURI_COMMANDS = {
   cancelTask: "crowclaw_task_cancel",
   decideAction: "crowclaw_action_decide",
   saveSettings: "crowclaw_settings_save",
+  listCrowQuantMemories: "crowclaw_crowquant_list",
+  rememberCrowQuant: "crowclaw_crowquant_remember",
+  recallCrowQuant: "crowclaw_crowquant_recall",
 } as const;
 
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -70,6 +75,14 @@ export function createTauriGateway(): CrowClawGateway {
       }),
     saveSettings: (settings: AppSettings) =>
       invokeNative<AppSettings>(TAURI_COMMANDS.saveSettings, { request: settings }),
+    listCrowQuantMemories: () =>
+      invokeNative<CrowQuantMemory[]>(TAURI_COMMANDS.listCrowQuantMemories),
+    rememberCrowQuant: (text: string) =>
+      invokeNative<CrowQuantMemory>(TAURI_COMMANDS.rememberCrowQuant, { request: { text } }),
+    recallCrowQuant: (query: string, limit: number) =>
+      invokeNative<CrowQuantSearchHit[]>(TAURI_COMMANDS.recallCrowQuant, {
+        request: { query, limit },
+      }),
   };
 }
 
