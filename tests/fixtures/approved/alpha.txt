@@ -1,0 +1,2 @@
+CrowClaw Alpha acceptance fixture.
+The approved file describes a local-first desktop agent that remembers conversations and never runs a consequential tool before the user approves it.

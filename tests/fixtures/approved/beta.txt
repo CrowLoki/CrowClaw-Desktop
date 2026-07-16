@@ -1,0 +1,1 @@
+This file exists to prove that CrowClaw lists the selected folder accurately and reads only the file the user approves.
