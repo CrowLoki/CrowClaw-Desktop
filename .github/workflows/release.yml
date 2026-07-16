@@ -35,6 +35,56 @@ jobs:
           rustup update stable
           rustup default stable
 
+      - name: Validate release identity and notes
+        id: release_identity
+        shell: pwsh
+        run: |
+          $package = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
+          $packageLock = Get-Content -Raw -LiteralPath "package-lock.json" | ConvertFrom-Json -AsHashtable
+          $tauri = Get-Content -Raw -LiteralPath "src-tauri/tauri.conf.json" | ConvertFrom-Json
+          $cargo = cargo metadata `
+            --manifest-path "src-tauri/Cargo.toml" `
+            --format-version 1 `
+            --no-deps `
+            --locked | ConvertFrom-Json
+          $cargoPackage = $cargo.packages | Where-Object { $_.name -eq "crowclaw-desktop" }
+
+          $version = [string]$package.version
+          $versions = [ordered]@{
+            "package.json" = $version
+            "package-lock.json" = [string]$packageLock["version"]
+            "package-lock root package" = [string]$packageLock["packages"][""]["version"]
+            "Cargo.toml/Cargo.lock" = [string]$cargoPackage.version
+            "tauri.conf.json" = [string]$tauri.version
+          }
+          foreach ($entry in $versions.GetEnumerator()) {
+            if ($entry.Value -ne $version) {
+              throw "Version mismatch: $($entry.Key) is '$($entry.Value)', expected '$version'."
+            }
+          }
+
+          $releaseTag = "v$version"
+          $notesPath = "docs/release-notes/$releaseTag.md"
+          if (-not (Test-Path -LiteralPath $notesPath)) {
+            throw "Release notes do not exist: $notesPath"
+          }
+
+          if ("${{ github.event_name }}" -eq "push") {
+            if ("${{ github.ref_type }}" -ne "tag") {
+              throw "Release publication requires a tag push."
+            }
+            if ("${{ github.ref_name }}" -ne $releaseTag) {
+              throw "Tag '${{ github.ref_name }}' does not match product version '$releaseTag'."
+            }
+            if (Select-String -LiteralPath $notesPath -SimpleMatch "PENDING-BEFORE-TAG" -Quiet) {
+              throw "Release notes still contain PENDING-BEFORE-TAG acceptance placeholders."
+            }
+          }
+
+          "release_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_notes_path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Install locked frontend dependencies
         run: npm ci
 
@@ -57,19 +107,21 @@ jobs:
       - name: Upload verified release bundle
         uses: actions/upload-artifact@v7
         with:
-          name: CrowClaw-${{ github.ref_name }}-windows-x64
+          name: CrowClaw-${{ steps.release_identity.outputs.release_tag }}-windows-x64
           path: release/*
           if-no-files-found: error
           retention-days: 30
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_identity.outputs.release_tag }}
+          RELEASE_NOTES_PATH: ${{ steps.release_identity.outputs.release_notes_path }}
         run: |
-          gh release create "${{ github.ref_name }}" release/* `
+          gh release create "$env:RELEASE_TAG" release/* `
             --verify-tag `
-            --title "CrowClaw ${{ github.ref_name }}" `
-            --notes-file "docs/release-notes/v0.1.0-alpha.1.md" `
+            --title "CrowClaw $env:RELEASE_TAG" `
+            --notes-file "$env:RELEASE_NOTES_PATH" `
             --prerelease
