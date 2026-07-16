@@ -26,13 +26,32 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "publisher": "CrowClaw",
+    "homepage": "https://github.com/CrowLoki/CrowClaw-Desktop",
+    "category": "Productivity",
+    "shortDescription": "Local-first Windows desktop AI agent",
+    "longDescription": "CrowClaw is an installable Windows desktop AI agent with local-model connections, persistent conversations, tasks, and approval-gated tools.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   }
 }
