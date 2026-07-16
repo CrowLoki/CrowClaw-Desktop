@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="CrowClaw">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10121a"/>
+      <stop offset="1" stop-color="#05060a"/>
+    </linearGradient>
+    <linearGradient id="claw" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f7fb"/>
+      <stop offset="0.55" stop-color="#b8c5ff"/>
+      <stop offset="1" stop-color="#7c5cff"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="13" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="222" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="330" fill="none" stroke="#242839" stroke-width="22"/>
+  <path d="M287 704 C394 677 493 569 548 331 C470 382 401 477 360 586 C336 649 313 682 287 704 Z" fill="url(#claw)" filter="url(#glow)"/>
+  <path d="M441 741 C545 686 620 554 632 306 C569 372 524 474 505 590 C493 662 470 713 441 741 Z" fill="url(#claw)" filter="url(#glow)"/>
+  <path d="M594 715 C684 635 728 493 687 267 C644 344 626 451 636 564 C642 632 625 685 594 715 Z" fill="url(#claw)" filter="url(#glow)"/>
+  <circle cx="512" cy="512" r="25" fill="#74f2ce" filter="url(#glow)"/>
+</svg>
