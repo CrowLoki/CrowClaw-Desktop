@@ -152,7 +152,7 @@ export function MemoryView({
         <div>
           <span className="eyebrow">Continuity</span>
           <h1>Memory</h1>
-          <p>Store and retrieve local semantic memory with CrowQuant while keeping approved activity records separate.</p>
+          <p>Store and retrieve local compressed lexical memory with CrowQuant while keeping approved activity records separate.</p>
         </div>
         <span className="section-stat"><Brain size={18} /> {crowQuantMemories.length + memories.length} records</span>
       </header>
@@ -163,8 +163,8 @@ export function MemoryView({
             <span className="crowquant-panel__icon"><Database size={20} /></span>
             <div>
               <span className="eyebrow">Local compressed retrieval</span>
-              <h2 id="crowquant-heading">CrowQuant semantic memory</h2>
-              <p>Remember text as a compressed local vector, then recall the nearest stored context.</p>
+              <h2 id="crowquant-heading">CrowQuant compressed memory</h2>
+              <p>Remember text as a compressed local lexical vector, then recall the highest-ranked stored context.</p>
             </div>
           </div>
           <span className="crowquant-record-count">{crowQuantMemories.length} stored</span>

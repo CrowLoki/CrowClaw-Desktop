@@ -76,7 +76,7 @@ describe("CrowClaw desktop shell", () => {
     render(<App gateway={createDevelopmentGateway({ firstRun: false, delayMs: 0 })} />);
 
     await user.click(await screen.findByRole("button", { name: /memory/i }));
-    expect(await screen.findByRole("heading", { name: /crowquant semantic memory/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /crowquant compressed memory/i })).toBeVisible();
     expect(screen.getByRole("heading", { name: /approved activity memory/i })).toBeVisible();
 
     await user.type(
