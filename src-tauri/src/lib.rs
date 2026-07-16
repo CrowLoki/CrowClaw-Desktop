@@ -1,11 +1,13 @@
 pub mod agent;
 mod app;
+pub mod crowquant;
 pub mod storage;
 pub mod tools;
 
 use app::{
     crowclaw_action_decide, crowclaw_app_bootstrap, crowclaw_chat_send,
-    crowclaw_conversation_create, crowclaw_conversation_get, crowclaw_folder_select,
+    crowclaw_conversation_create, crowclaw_conversation_get, crowclaw_crowquant_list,
+    crowclaw_crowquant_recall, crowclaw_crowquant_remember, crowclaw_folder_select,
     crowclaw_model_connect, crowclaw_model_discover, crowclaw_model_test_connection,
     crowclaw_settings_save, crowclaw_task_cancel, AppState,
 };
@@ -28,6 +30,9 @@ pub fn run() {
             crowclaw_conversation_create,
             crowclaw_conversation_get,
             crowclaw_folder_select,
+            crowclaw_crowquant_list,
+            crowclaw_crowquant_remember,
+            crowclaw_crowquant_recall,
             crowclaw_chat_send,
             crowclaw_task_cancel,
             crowclaw_action_decide,

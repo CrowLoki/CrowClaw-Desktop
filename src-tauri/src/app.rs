@@ -16,8 +16,10 @@ use crate::{
         AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession, CancellationToken, ChatMessage,
         ChatRole, OpenAiCompatibleClient, ProviderConfig, ProviderHealthState, ProviderPreset,
     },
+    crowquant,
     storage::{
-        ActionStatus as StoredActionStatus, ConversationInput, Message, MessageInput,
+        ActionStatus as StoredActionStatus, ConversationInput,
+        CrowQuantMemory as StoredCrowQuantMemory, CrowQuantMemoryInput, Message, MessageInput,
         MessageRole as StoredMessageRole, ProposedAction as StoredAction, ProposedActionInput,
         ProviderProfile, ProviderProfileInput, Storage, StorageError, StoredTask, TaskInput,
         TaskStatus as StoredTaskStatus,
@@ -240,6 +242,43 @@ pub struct MemoryRecord {
     conversation_id: Option<String>,
     created_at: String,
     tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrowQuantMemoryView {
+    id: String,
+    text: String,
+    created_at: String,
+    original_bytes: u64,
+    compressed_bytes: u64,
+    compression_ratio: f64,
+    algorithm: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrowQuantSearchHit {
+    memory: CrowQuantMemoryView,
+    score: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrowQuantRememberRequest {
+    text: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrowQuantRecallRequest {
+    query: String,
+    #[serde(default = "default_crowquant_limit")]
+    limit: usize,
+}
+
+fn default_crowquant_limit() -> usize {
+    5
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -530,6 +569,91 @@ pub async fn crowclaw_folder_select(
             .unwrap_or_else(|| canonical.display().to_string()),
         display_path: canonical.display().to_string(),
     }))
+}
+
+#[tauri::command]
+pub fn crowclaw_crowquant_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<CrowQuantMemoryView>, String> {
+    state
+        .storage
+        .list_crowquant_memories()
+        .map_err(display_error)
+        .map(|records| records.iter().map(crowquant_memory_view).collect())
+}
+
+#[tauri::command]
+pub fn crowclaw_crowquant_remember(
+    state: State<'_, AppState>,
+    request: CrowQuantRememberRequest,
+) -> Result<CrowQuantMemoryView, String> {
+    let text = request.text.trim();
+    if text.is_empty() {
+        return Err("Memory text cannot be empty".into());
+    }
+    if text.len() > 16 * 1024 {
+        return Err("Memory text cannot exceed 16 KiB".into());
+    }
+    let vector = crowquant::vectorize_text(text)?;
+    let block = crowquant::quantize(&vector)?;
+    let serialized = crowquant::serialize(&block);
+    let record = state
+        .storage
+        .create_crowquant_memory(&CrowQuantMemoryInput {
+            id: Uuid::new_v4().to_string(),
+            text: text.into(),
+            block: serialized,
+            format_version: 1,
+            algorithm: crowquant::ALGORITHM.into(),
+            dimension: block.dimension,
+            seed: block.seed,
+            bits: block.bits,
+            original_bytes: (vector.len() * std::mem::size_of::<f64>()) as u64,
+        })
+        .map_err(display_error)?;
+    Ok(crowquant_memory_view(&record))
+}
+
+#[tauri::command]
+pub fn crowclaw_crowquant_recall(
+    state: State<'_, AppState>,
+    request: CrowQuantRecallRequest,
+) -> Result<Vec<CrowQuantSearchHit>, String> {
+    let query = request.query.trim();
+    if query.is_empty() {
+        return Err("Memory query cannot be empty".into());
+    }
+    let limit = request.limit.clamp(1, 20);
+    let query_block = crowquant::quantize(&crowquant::vectorize_text(query)?)?;
+    let mut hits = state
+        .storage
+        .list_crowquant_memories()
+        .map_err(display_error)?
+        .into_iter()
+        .map(|record| {
+            let block = crowquant::deserialize(&record.block)?;
+            if block.dimension != query_block.dimension
+                || block.seed != query_block.seed
+                || block.bits != query_block.bits
+            {
+                return Err("Stored CrowQuant memory uses incompatible settings".to_string());
+            }
+            let score = crowquant::compressed_cosine(&query_block, &block)?;
+            Ok(CrowQuantSearchHit {
+                memory: crowquant_memory_view(&record),
+                score,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.memory.created_at.cmp(&left.memory.created_at))
+    });
+    hits.truncate(limit);
+    Ok(hits)
 }
 
 #[tauri::command]
@@ -1292,6 +1416,23 @@ fn memory_from_action(action: &StoredAction) -> MemoryRecord {
         conversation_id: Some(action.conversation_id.clone()),
         created_at: iso(action.updated_at_ms),
         tags: vec!["approved".into(), "local".into(), action.tool_name.clone()],
+    }
+}
+
+fn crowquant_memory_view(memory: &StoredCrowQuantMemory) -> CrowQuantMemoryView {
+    let compressed_bytes = memory.block.len() as u64;
+    CrowQuantMemoryView {
+        id: memory.id.clone(),
+        text: memory.text.clone(),
+        created_at: iso(memory.created_at_ms),
+        original_bytes: memory.original_bytes,
+        compressed_bytes,
+        compression_ratio: if compressed_bytes == 0 {
+            0.0
+        } else {
+            memory.original_bytes as f64 / compressed_bytes as f64
+        },
+        algorithm: memory.algorithm.clone(),
     }
 }
 

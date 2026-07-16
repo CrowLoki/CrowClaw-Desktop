@@ -252,6 +252,33 @@ pub struct ActionAuditEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CrowQuantMemoryInput {
+    pub id: String,
+    pub text: String,
+    pub block: Vec<u8>,
+    pub format_version: u32,
+    pub algorithm: String,
+    pub dimension: u32,
+    pub seed: u32,
+    pub bits: u8,
+    pub original_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CrowQuantMemory {
+    pub id: String,
+    pub text: String,
+    pub block: Vec<u8>,
+    pub format_version: u32,
+    pub algorithm: String,
+    pub dimension: u32,
+    pub seed: u32,
+    pub bits: u8,
+    pub original_bytes: u64,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConversationExport {
     pub conversation: Conversation,
     pub messages: Vec<Message>,
@@ -267,6 +294,7 @@ pub struct StorageExport {
     pub tasks: Vec<StoredTask>,
     pub actions: Vec<ProposedAction>,
     pub action_audit: Vec<ActionAuditEvent>,
+    pub crowquant_memories: Vec<CrowQuantMemory>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

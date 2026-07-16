@@ -1,5 +1,6 @@
 mod actions;
 mod conversations;
+mod crowquant;
 mod error;
 mod migrations;
 mod models;

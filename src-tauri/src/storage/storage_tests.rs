@@ -132,12 +132,41 @@ fn migration_is_idempotent_across_repeated_opens() -> StorageResult<()> {
     let connection = Connection::open(database_path)?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let tables: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('settings', 'provider_profiles', 'conversations', 'messages', 'tasks', 'proposed_actions', 'action_audit')",
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('settings', 'provider_profiles', 'conversations', 'messages', 'tasks', 'proposed_actions', 'action_audit', 'crowquant_memories')",
         [],
         |row| row.get(0),
     )?;
     assert_eq!(version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(tables, 7);
+    assert_eq!(tables, 8);
+    Ok(())
+}
+
+#[test]
+fn crowquant_memory_survives_close_and_reopen() -> StorageResult<()> {
+    let directory = TempDir::new()?;
+    {
+        let storage = Storage::open(directory.path())?;
+        let created = storage.create_crowquant_memory(&CrowQuantMemoryInput {
+            id: "memory-1".into(),
+            text: "The quantum lab uses local compressed memory.".into(),
+            block: vec![1, 2, 3, 4],
+            format_version: 1,
+            algorithm: "CrowQuant test".into(),
+            dimension: 256,
+            seed: 42,
+            bits: 4,
+            original_bytes: 2048,
+        })?;
+        assert_eq!(
+            created.text,
+            "The quantum lab uses local compressed memory."
+        );
+    }
+    let reopened = Storage::open(directory.path())?;
+    let memories = reopened.list_crowquant_memories()?;
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].block, vec![1, 2, 3, 4]);
+    assert_eq!(memories[0].seed, 42);
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -16,6 +16,9 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
 
     if installed_version < 1 {
         migrate_to_v1(connection)?;
+    }
+    if installed_version < 2 {
+        migrate_to_v2(connection)?;
     }
 
     Ok(())
@@ -110,6 +113,31 @@ fn migrate_to_v1(connection: &mut Connection) -> StorageResult<()> {
         );
         CREATE INDEX IF NOT EXISTS action_audit_by_action
             ON action_audit(action_id, sequence);
+        "#,
+    )?;
+    transaction.pragma_update(None, "user_version", 1u32)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_to_v2(connection: &mut Connection) -> StorageResult<()> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS crowquant_memories (
+            id TEXT PRIMARY KEY NOT NULL,
+            text TEXT NOT NULL,
+            block BLOB NOT NULL,
+            format_version INTEGER NOT NULL CHECK (format_version > 0),
+            algorithm TEXT NOT NULL,
+            dimension INTEGER NOT NULL CHECK (dimension > 0),
+            seed INTEGER NOT NULL,
+            bits INTEGER NOT NULL CHECK (bits BETWEEN 1 AND 8),
+            original_bytes INTEGER NOT NULL CHECK (original_bytes > 0),
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS crowquant_memories_newest
+            ON crowquant_memories(created_at_ms DESC);
         "#,
     )?;
     transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;

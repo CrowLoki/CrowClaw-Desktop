@@ -2,6 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::actions::{list_action_audit_from, list_actions_from};
 use super::conversations::{list_conversations_from, list_messages_from};
+use super::crowquant::list_crowquant_memories_from;
 use super::settings::{list_provider_profiles_from, list_settings_from};
 use super::tasks::list_tasks_from;
 use super::{
@@ -35,6 +36,7 @@ impl Storage {
             tasks: list_tasks_from(&transaction, None)?,
             actions: list_actions_from(&transaction, None, None)?,
             action_audit: list_action_audit_from(&transaction, None)?,
+            crowquant_memories: list_crowquant_memories_from(&transaction)?,
         };
         transaction.commit()?;
         Ok(export)
@@ -73,6 +75,7 @@ impl Storage {
             DELETE FROM conversations;
             DELETE FROM provider_profiles;
             DELETE FROM settings;
+            DELETE FROM crowquant_memories;
             DELETE FROM sqlite_sequence WHERE name = 'action_audit';
             "#,
         )?;
@@ -96,7 +99,8 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM messages) +
              (SELECT COUNT(*) FROM tasks) +
              (SELECT COUNT(*) FROM proposed_actions) +
-             (SELECT COUNT(*) FROM action_audit)"#,
+             (SELECT COUNT(*) FROM action_audit) +
+             (SELECT COUNT(*) FROM crowquant_memories)"#,
         [],
         |row| row.get(0),
     )?;
