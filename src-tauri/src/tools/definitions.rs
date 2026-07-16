@@ -2,6 +2,8 @@ use serde_json::json;
 
 use crate::agent::ToolDefinition;
 
+use super::types::MEMORY_TEXT_MAX_BYTES;
+
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -58,6 +60,47 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
         },
+        ToolDefinition {
+            name: "remember_memory".into(),
+            description: "Propose storing text in CrowClaw's local CrowQuant compressed lexical memory. Nothing is compressed or written until the user approves the exact text.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MEMORY_TEXT_MAX_BYTES,
+                        "description": "The exact text to store in local CrowQuant memory"
+                    }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "search_memory".into(),
+            description: "Propose searching CrowClaw's local CrowQuant compressed lexical memory. No stored memory is read until the user approves the exact query and result limit.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MEMORY_TEXT_MAX_BYTES,
+                        "description": "The exact lexical memory query"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 5,
+                        "description": "Maximum number of ranked memories to return"
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -66,11 +109,20 @@ mod tests {
     use super::builtin_tool_definitions;
 
     #[test]
-    fn exposes_only_the_three_approval_gated_alpha_tools() {
+    fn exposes_the_five_approval_gated_crowclaw_tools() {
         let names = builtin_tool_definitions()
             .into_iter()
             .map(|definition| definition.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["list_directory", "read_text_file", "run_command"]);
+        assert_eq!(
+            names,
+            [
+                "list_directory",
+                "read_text_file",
+                "run_command",
+                "remember_memory",
+                "search_memory"
+            ]
+        );
     }
 }

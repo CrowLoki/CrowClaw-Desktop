@@ -88,7 +88,7 @@ export type PendingAction = {
   id: string;
   taskId: string;
   conversationId: string;
-  kind: "read-files" | "write-file" | "run-command" | "open-application";
+  kind: "read-files" | "write-file" | "run-command" | "open-application" | "memory";
   title: string;
   summary: string;
   target: string;
@@ -162,6 +162,7 @@ export type ActionDecisionResult = {
   task: AgentTask;
   pendingActions: PendingAction[];
   memory: MemoryRecord | null;
+  memories: MemoryRecord[];
 };
 
 export type TaskCancellationResult = {

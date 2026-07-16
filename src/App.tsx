@@ -227,6 +227,12 @@ export function App({ gateway = defaultGateway }: AppProps) {
       if (result.conversation.id === conversation?.id) setConversation(result.conversation);
       setBootstrap((current) => {
         if (!current) return current;
+        const returnedMemories = result.memories.length > 0
+          ? result.memories
+          : result.memory
+            ? [result.memory]
+            : [];
+        const returnedMemoryIds = new Set(returnedMemories.map(({ id }) => id));
         return {
           ...current,
           conversations: upsertSummary(current.conversations, result.summary),
@@ -237,7 +243,9 @@ export function App({ gateway = defaultGateway }: AppProps) {
               ({ id, taskId }) => id !== action.id && taskId !== result.task.id,
             ),
           ],
-          memories: result.memory ? [result.memory, ...current.memories] : current.memories,
+          memories: returnedMemories.length > 0
+            ? [...returnedMemories, ...current.memories.filter(({ id }) => !returnedMemoryIds.has(id))]
+            : current.memories,
         };
       });
     } catch (cause) {

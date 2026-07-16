@@ -14,12 +14,13 @@ use uuid::Uuid;
 use crate::{
     agent::{
         AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession, CancellationToken, ChatMessage,
-        ChatRole, OpenAiCompatibleClient, ProviderConfig, ProviderHealthState, ProviderPreset,
+        ChatRole, OpenAiCompatibleClient, PendingToolCall, ProviderConfig, ProviderHealthState,
+        ProviderPreset,
     },
-    crowquant,
+    crowquant_memory::{CrowQuantMemoryService, CrowQuantSearchHit as ServiceCrowQuantSearchHit},
     storage::{
         ActionStatus as StoredActionStatus, ConversationInput,
-        CrowQuantMemory as StoredCrowQuantMemory, CrowQuantMemoryInput, Message, MessageInput,
+        CrowQuantMemory as StoredCrowQuantMemory, Message, MessageInput,
         MessageRole as StoredMessageRole, ProposedAction as StoredAction, ProposedActionInput,
         ProviderProfile, ProviderProfileInput, Storage, StorageError, StoredTask, TaskInput,
         TaskStatus as StoredTaskStatus,
@@ -30,10 +31,11 @@ use crate::{
 const SETTINGS_KEY: &str = "app_settings";
 const DEFAULT_PROVIDER_ID: &str = "crowclaw-default-provider";
 const TASK_EVENT: &str = "crowclaw://task-updated";
-const SYSTEM_PROMPT: &str = "You are CrowClaw, a local-first desktop AI agent. Be direct and useful. Use the supplied tools when the user asks to inspect a selected folder or run a local task. Never claim a tool ran until its actual returned tool result is present. The desktop application holds every tool action for explicit user approval.";
+const SYSTEM_PROMPT: &str = "You are CrowClaw, a local-first desktop AI agent. Be direct and useful. Use the supplied tools when the user asks to inspect a selected folder, run a local task, explicitly remember text, or search remembered text. CrowQuant memory retrieval is compressed lexical similarity, not a neural or semantic embedding. Never claim a tool ran until its actual returned tool result is present. The desktop application holds every tool action for explicit user approval.";
 
 pub struct AppState {
-    storage: Storage,
+    storage: Arc<Storage>,
+    crowquant: Arc<CrowQuantMemoryService>,
     selected_folders: Mutex<HashMap<String, PathBuf>>,
     active_tasks: Mutex<HashMap<String, Arc<LiveTask>>>,
     action_to_task: Mutex<HashMap<String, String>>,
@@ -49,7 +51,8 @@ struct LiveTask {
 
 impl AppState {
     pub fn open(app_data_directory: PathBuf) -> Result<Self, StorageError> {
-        let storage = Storage::open(app_data_directory)?;
+        let storage = Arc::new(Storage::open(app_data_directory)?);
+        let crowquant = Arc::new(CrowQuantMemoryService::new(storage.clone()));
 
         // Approval tokens are intentionally process-local. Reconcile stale work
         // safely rather than exposing an approval button that cannot execute.
@@ -72,6 +75,7 @@ impl AppState {
 
         Ok(Self {
             storage,
+            crowquant,
             selected_folders: Mutex::new(HashMap::new()),
             active_tasks: Mutex::new(HashMap::new()),
             action_to_task: Mutex::new(HashMap::new()),
@@ -360,6 +364,7 @@ pub struct ActionDecisionResult {
     task: AgentTaskView,
     pending_actions: Vec<PendingActionView>,
     memory: Option<MemoryRecord>,
+    memories: Vec<MemoryRecord>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -576,9 +581,8 @@ pub fn crowclaw_crowquant_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<CrowQuantMemoryView>, String> {
     state
-        .storage
-        .list_crowquant_memories()
-        .map_err(display_error)
+        .crowquant
+        .list_records()
         .map(|records| records.iter().map(crowquant_memory_view).collect())
 }
 
@@ -587,30 +591,7 @@ pub fn crowclaw_crowquant_remember(
     state: State<'_, AppState>,
     request: CrowQuantRememberRequest,
 ) -> Result<CrowQuantMemoryView, String> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err("Memory text cannot be empty".into());
-    }
-    if text.len() > 16 * 1024 {
-        return Err("Memory text cannot exceed 16 KiB".into());
-    }
-    let vector = crowquant::vectorize_text(text)?;
-    let block = crowquant::quantize(&vector)?;
-    let serialized = crowquant::serialize(&block);
-    let record = state
-        .storage
-        .create_crowquant_memory(&CrowQuantMemoryInput {
-            id: Uuid::new_v4().to_string(),
-            text: text.into(),
-            block: serialized,
-            format_version: 1,
-            algorithm: crowquant::ALGORITHM.into(),
-            dimension: block.dimension,
-            seed: block.seed,
-            bits: block.bits,
-            original_bytes: (vector.len() * std::mem::size_of::<f64>()) as u64,
-        })
-        .map_err(display_error)?;
+    let record = state.crowquant.remember_record(&request.text)?;
     Ok(crowquant_memory_view(&record))
 }
 
@@ -619,41 +600,10 @@ pub fn crowclaw_crowquant_recall(
     state: State<'_, AppState>,
     request: CrowQuantRecallRequest,
 ) -> Result<Vec<CrowQuantSearchHit>, String> {
-    let query = request.query.trim();
-    if query.is_empty() {
-        return Err("Memory query cannot be empty".into());
-    }
-    let limit = request.limit.clamp(1, 20);
-    let query_block = crowquant::quantize(&crowquant::vectorize_text(query)?)?;
-    let mut hits = state
-        .storage
-        .list_crowquant_memories()
-        .map_err(display_error)?
-        .into_iter()
-        .map(|record| {
-            let block = crowquant::deserialize(&record.block)?;
-            if block.dimension != query_block.dimension
-                || block.seed != query_block.seed
-                || block.bits != query_block.bits
-            {
-                return Err("Stored CrowQuant memory uses incompatible settings".to_string());
-            }
-            let score = crowquant::compressed_cosine(&query_block, &block)?;
-            Ok(CrowQuantSearchHit {
-                memory: crowquant_memory_view(&record),
-                score,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.memory.created_at.cmp(&left.memory.created_at))
-    });
-    hits.truncate(limit);
-    Ok(hits)
+    state
+        .crowquant
+        .search_records(&request.query, request.limit)
+        .map(|hits| hits.into_iter().map(crowquant_search_hit_view).collect())
 }
 
 #[tauri::command]
@@ -736,7 +686,9 @@ pub async fn crowclaw_chat_send(
     let runtime = Arc::new(
         AgentRuntime::new(
             provider,
-            ToolExecutor::new(policy).map_err(display_error)?,
+            ToolExecutor::new(policy)
+                .map_err(display_error)?
+                .with_memory_backend(state.crowquant.clone()),
             AgentLimits::default(),
         )
         .map_err(display_error)?,
@@ -936,12 +888,14 @@ pub async fn crowclaw_action_decide(
         .cloned()
         .ok_or_else(|| "The action task is no longer active".to_string())?;
     let mut session = live.session.lock().await;
-    let proposal = session
+    let pending_call = session
         .pending_actions
         .iter()
         .find(|pending| pending.proposal.action_id.to_string() == request.action_id)
-        .map(|pending| pending.proposal.clone())
+        .cloned()
         .ok_or_else(|| "That action is no longer pending".to_string())?;
+    let proposal = pending_call.proposal.clone();
+    let pending_before_run = session.pending_actions.clone();
 
     let approved = matches!(request.decision, ActionDecisionRequest::Approved);
     if approved {
@@ -977,14 +931,20 @@ pub async fn crowclaw_action_decide(
         .runtime
         .run_until_blocked(&mut session, &live.cancellation)
         .await;
-    let mut memory = None;
-    if approved {
-        memory = record_tool_execution(
-            &state.storage,
-            &request.action_id,
-            &session.messages[before_message_len.min(session.messages.len())..],
-        )?;
-    }
+    let recorded = record_tool_executions(
+        &state.storage,
+        &pending_before_run,
+        &session.messages[before_message_len.min(session.messages.len())..],
+    )?;
+    let memories = recorded
+        .iter()
+        .map(|(_, memory)| memory.clone())
+        .collect::<Vec<_>>();
+    let memory = recorded
+        .iter()
+        .find(|(action_id, _)| action_id == &request.action_id)
+        .or_else(|| recorded.first())
+        .map(|(_, memory)| memory.clone());
     drop(session);
     state
         .action_to_task
@@ -1058,6 +1018,7 @@ pub async fn crowclaw_action_decide(
         task: task_view(&state.storage, &stored_task).map_err(display_error)?,
         pending_actions,
         memory,
+        memories,
     })
 }
 
@@ -1309,12 +1270,12 @@ fn pending_action_from_stored(action: &StoredAction) -> Option<PendingActionView
         kind: action_kind(&action.tool_name),
         title: action_title(&action.tool_name).into(),
         summary: action.summary.clone(),
-        target: action_target(&action.request),
+        target: action_target(&action.tool_name, &action.request),
         details: action_details(&action.tool_name, &action.request),
-        risk: if action.tool_name == "run_command" {
-            "high"
-        } else {
-            "low"
+        risk: match action.tool_name.as_str() {
+            "run_command" => "high",
+            "remember_memory" | "search_memory" => "medium",
+            _ => "low",
         },
         requested_at: iso(action.created_at_ms),
     })
@@ -1383,35 +1344,60 @@ fn persist_assistant_message(
     Ok(())
 }
 
-fn record_tool_execution(
+fn record_tool_executions(
     storage: &Storage,
-    action_id: &str,
+    pending: &[PendingToolCall],
     messages: &[ChatMessage],
-) -> Result<Option<MemoryRecord>, String> {
-    let tool_result = messages
-        .iter()
-        .rev()
-        .find(|message| message.role == ChatRole::Tool)
-        .and_then(|message| message.content.as_deref())
-        .and_then(|content| serde_json::from_str::<Value>(content).ok())
-        .unwrap_or_else(|| json!({ "state": "failed", "error": "Tool result was not captured" }));
-    if tool_result.get("state").and_then(Value::as_str) == Some("failed") {
-        storage
-            .record_action_failure(action_id, &tool_result.to_string())
-            .map_err(display_error)?;
-        return Ok(None);
+) -> Result<Vec<(String, MemoryRecord)>, String> {
+    let mut recorded = Vec::new();
+    for call in pending {
+        let Some(tool_result) = messages
+            .iter()
+            .find(|message| {
+                message.role == ChatRole::Tool
+                    && message.tool_call_id.as_deref() == Some(&call.provider_tool_call_id)
+            })
+            .and_then(|message| message.content.as_deref())
+            .and_then(|content| serde_json::from_str::<Value>(content).ok())
+        else {
+            continue;
+        };
+        let action_id = call.proposal.action_id.to_string();
+        match tool_result.get("state").and_then(Value::as_str) {
+            Some("executed") => {
+                let action = storage
+                    .record_action_success(&action_id, &tool_result)
+                    .map_err(display_error)?;
+                recorded.push((action_id, memory_from_action(&action)));
+            }
+            Some("failed") => {
+                storage
+                    .record_action_failure(&action_id, &tool_result.to_string())
+                    .map_err(display_error)?;
+            }
+            Some("denied") => {
+                // The user's denial was already durably recorded before the
+                // runtime received the decision. Do not rewrite it as success.
+            }
+            _ => {
+                storage
+                    .record_action_failure(&action_id, "Tool returned an invalid result")
+                    .map_err(display_error)?;
+            }
+        }
     }
-    let action = storage
-        .record_action_success(action_id, &tool_result)
-        .map_err(display_error)?;
-    Ok(Some(memory_from_action(&action)))
+    Ok(recorded)
 }
 
 fn memory_from_action(action: &StoredAction) -> MemoryRecord {
     MemoryRecord {
         id: format!("memory-{}", action.id),
         title: format!("Approved {}", action.tool_name.replace('_', " ")),
-        preview: format!("{} — {}", action.summary, action_target(&action.request)),
+        preview: format!(
+            "{} — {}",
+            action.summary,
+            action_target(&action.tool_name, &action.request)
+        ),
         source: "approved-action",
         conversation_id: Some(action.conversation_id.clone()),
         created_at: iso(action.updated_at_ms),
@@ -1433,6 +1419,13 @@ fn crowquant_memory_view(memory: &StoredCrowQuantMemory) -> CrowQuantMemoryView 
             memory.original_bytes as f64 / compressed_bytes as f64
         },
         algorithm: memory.algorithm.clone(),
+    }
+}
+
+fn crowquant_search_hit_view(hit: ServiceCrowQuantSearchHit) -> CrowQuantSearchHit {
+    CrowQuantSearchHit {
+        memory: crowquant_memory_view(&hit.memory),
+        score: hit.score,
     }
 }
 
@@ -1502,6 +1495,7 @@ fn remove_live_task(state: &AppState, task_id: &str) -> Result<(), String> {
 fn action_kind(tool_name: &str) -> &'static str {
     match tool_name {
         "run_command" => "run-command",
+        "remember_memory" | "search_memory" => "memory",
         _ => "read-files",
     }
 }
@@ -1511,11 +1505,16 @@ fn action_title(tool_name: &str) -> &'static str {
         "list_directory" => "List a selected folder",
         "read_text_file" => "Read a selected text file",
         "run_command" => "Run a local command",
+        "remember_memory" => "Remember text with CrowQuant",
+        "search_memory" => "Search CrowQuant memory",
         _ => "Run a local action",
     }
 }
 
-fn action_target(request: &Value) -> String {
+fn action_target(tool_name: &str, request: &Value) -> String {
+    if matches!(tool_name, "remember_memory" | "search_memory") {
+        return "CrowClaw local CrowQuant memory".into();
+    }
     request
         .get("path")
         .or_else(|| request.get("cwd"))
@@ -1533,14 +1532,39 @@ fn action_details(tool_name: &str, request: &Value) -> Vec<String> {
             "Do not read file contents in this action".into(),
         ],
         "read_text_file" => vec![
-            format!("Read only {}", action_target(request)),
+            format!("Read only {}", action_target(tool_name, request)),
             "Reject binary files and enforce the size boundary".into(),
             "Return the actual approved contents to the local model".into(),
         ],
         "run_command" => vec![
-            format!("Run the requested program in {}", action_target(request)),
+            format!(
+                "Run the requested program in {}",
+                action_target(tool_name, request)
+            ),
             "Capture bounded output".into(),
             "Stop on cancellation or timeout".into(),
+        ],
+        "remember_memory" => vec![
+            format!(
+                "Store exactly this text: {:?}",
+                request.get("text").and_then(Value::as_str).unwrap_or("")
+            ),
+            "Create one native CrowQuant compressed lexical record in the local SQLite database"
+                .into(),
+            "Return the created memory ID and measured compression metadata to the connected model and approved-action audit"
+                .into(),
+        ],
+        "search_memory" => vec![
+            format!(
+                "Search for exactly: {:?}",
+                request.get("query").and_then(Value::as_str).unwrap_or("")
+            ),
+            format!(
+                "Return up to {} compressed-lexical matches",
+                request.get("limit").and_then(Value::as_u64).unwrap_or(5)
+            ),
+            "Read and return matching stored text to the connected model and approved-action audit"
+                .into(),
         ],
         _ => vec!["Run only the action shown here".into()],
     }
@@ -1571,4 +1595,168 @@ fn iso(milliseconds: i64) -> String {
 
 fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::{action_details, action_kind, action_target, action_title, record_tool_executions};
+    use crate::{
+        agent::{ChatMessage, PendingToolCall},
+        storage::{ActionStatus, ConversationInput, ProposedActionInput, Storage},
+        tools::{
+            MemorySearchMatch, RememberedMemory, ToolExecution, ToolExecutor, ToolOutput,
+            ToolPolicy, ToolRequest,
+        },
+    };
+
+    #[test]
+    fn memory_approval_copy_is_explicit_about_text_query_limit_and_exposure() {
+        let remember = json!({
+            "type": "remember_memory",
+            "text": "exact memory text"
+        });
+        assert_eq!(action_kind("remember_memory"), "memory");
+        assert_eq!(
+            action_title("remember_memory"),
+            "Remember text with CrowQuant"
+        );
+        assert_eq!(
+            action_target("remember_memory", &remember),
+            "CrowClaw local CrowQuant memory"
+        );
+        assert!(action_details("remember_memory", &remember)
+            .join(" ")
+            .contains("exact memory text"));
+
+        let search = json!({
+            "type": "search_memory",
+            "query": "exact search query",
+            "limit": 7
+        });
+        let details = action_details("search_memory", &search).join(" ");
+        assert!(details.contains("exact search query"));
+        assert!(details.contains('7'));
+        assert!(details.contains("connected model and approved-action audit"));
+    }
+
+    #[test]
+    fn batched_tool_results_are_audited_by_exact_provider_call_id() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Memory batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let remember = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "qubit calibration".into(),
+            })
+            .unwrap();
+        let search = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "qubit".into(),
+                limit: 3,
+            })
+            .unwrap();
+        for action in [&remember, &search] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+            storage
+                .approve_action(&action.action_id.to_string(), Some("test approval"))
+                .unwrap();
+        }
+        let pending = vec![
+            PendingToolCall {
+                provider_tool_call_id: "call-remember".into(),
+                proposal: remember.clone(),
+            },
+            PendingToolCall {
+                provider_tool_call_id: "call-search".into(),
+                proposal: search.clone(),
+            },
+        ];
+        let remember_result = ToolExecution::Executed {
+            action_id: remember.action_id.clone(),
+            output: ToolOutput::MemoryRemembered {
+                memory: RememberedMemory {
+                    id: "remembered-row".into(),
+                    text: "qubit calibration".into(),
+                    created_at_ms: 1,
+                    original_bytes: 2048,
+                    compressed_bytes: 161,
+                    algorithm: "CrowQuant test".into(),
+                },
+            },
+        };
+        let search_result = ToolExecution::Executed {
+            action_id: search.action_id.clone(),
+            output: ToolOutput::MemorySearch {
+                query: "qubit".into(),
+                matches: vec![MemorySearchMatch {
+                    id: "searched-row".into(),
+                    text: "stored qubit record".into(),
+                    created_at_ms: 1,
+                    score: 0.8,
+                }],
+            },
+        };
+        // Deliberately reverse the result order: newest-message guessing would
+        // bind these to the wrong stored actions.
+        let messages = vec![
+            ChatMessage::tool(
+                "call-search",
+                "search_memory",
+                serde_json::to_string(&search_result).unwrap(),
+            ),
+            ChatMessage::tool(
+                "call-remember",
+                "remember_memory",
+                serde_json::to_string(&remember_result).unwrap(),
+            ),
+        ];
+
+        let recorded = record_tool_executions(&storage, &pending, &messages).unwrap();
+        assert_eq!(recorded.len(), 2);
+        let stored_remember = storage
+            .get_proposed_action(&remember.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        let stored_search = storage
+            .get_proposed_action(&search.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_remember.status, ActionStatus::Succeeded);
+        assert_eq!(stored_search.status, ActionStatus::Succeeded);
+        assert_eq!(
+            stored_remember
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some("remembered-row")
+        );
+        assert_eq!(
+            stored_search
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/matches/0/id"))
+                .and_then(|value| value.as_str()),
+            Some("searched-row")
+        );
+    }
 }

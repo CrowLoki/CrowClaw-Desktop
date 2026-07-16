@@ -39,6 +39,10 @@ pub enum ToolError {
     CommandSpawn { program: String, message: String },
     #[error("command I/O failed: {message}")]
     CommandIo { message: String },
+    #[error("local memory is unavailable for this tool session")]
+    MemoryUnavailable,
+    #[error("local memory {operation} failed: {message}")]
+    MemoryOperation { operation: String, message: String },
     #[error("tool operation was cancelled")]
     Cancelled,
 }
@@ -72,6 +76,8 @@ impl ToolError {
             Self::NotText { .. } => "tool_not_text",
             Self::CommandSpawn { .. } => "tool_command_spawn",
             Self::CommandIo { .. } => "tool_command_io",
+            Self::MemoryUnavailable => "tool_memory_unavailable",
+            Self::MemoryOperation { .. } => "tool_memory_operation",
             Self::Cancelled => "tool_cancelled",
         }
     }
@@ -83,6 +89,7 @@ impl ToolError {
                 | Self::FileSystem { .. }
                 | Self::CommandSpawn { .. }
                 | Self::CommandIo { .. }
+                | Self::MemoryOperation { .. }
         )
     }
 
@@ -105,6 +112,7 @@ impl ToolError {
                 json!({ "path": path, "limitBytes": limit_bytes })
             }
             Self::CommandSpawn { program, .. } => json!({ "program": program }),
+            Self::MemoryOperation { operation, .. } => json!({ "operation": operation }),
             _ => Value::Null,
         }
     }

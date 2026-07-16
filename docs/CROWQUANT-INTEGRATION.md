@@ -39,4 +39,21 @@ CrowQuant block, exact algorithm metadata, dimensions, bit width, seed, source
 size, and creation time. Recall validates every stored block before ranking.
 The migration, retention removal, and export paths include these records.
 
+## Agent-facing approval boundary
+
+The conversational runtime exposes two explicit tools over this same native
+service and SQLite database:
+
+- `remember_memory` proposes the exact text to compress and persist;
+- `search_memory` proposes the exact lexical query and result limit.
+
+Both tools always stop at CrowClaw's existing single-use approval boundary.
+Proposal parsing performs no CrowQuant read or write. A denied or pre-execution
+cancelled call never reaches the memory service. Once approved, the real tool
+result is bound to its provider call ID, persisted in the approved-action
+audit, and returned to the connected model. Search approval therefore states
+plainly that matching stored text will be returned to both the model and audit.
+Batched tool proposals retain independent decisions and exact result
+binding.
+
 This integration does not edit or replace the existing CrowQuant repository.

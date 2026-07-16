@@ -18,7 +18,7 @@ use crate::agent::CancellationToken;
 use super::{
     approval::{ApprovalRegistry, ClaimedAction},
     ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
-    ProposedAction, ToolError, ToolExecution, ToolOutput, ToolRequest,
+    MemoryBackend, ProposedAction, ToolError, ToolExecution, ToolOutput, ToolRequest,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,10 +83,11 @@ impl ToolPolicy {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ToolExecutor {
     policy: ToolPolicy,
     approvals: Arc<ApprovalRegistry>,
+    memory_backend: Option<Arc<dyn MemoryBackend>>,
 }
 
 impl ToolExecutor {
@@ -95,7 +96,13 @@ impl ToolExecutor {
         Ok(Self {
             policy,
             approvals: Arc::new(ApprovalRegistry::default()),
+            memory_backend: None,
         })
+    }
+
+    pub fn with_memory_backend(mut self, backend: Arc<dyn MemoryBackend>) -> Self {
+        self.memory_backend = Some(backend);
+        self
     }
 
     pub fn policy(&self) -> &ToolPolicy {
@@ -159,7 +166,47 @@ impl ToolExecutor {
             ToolRequest::RunCommand { program, args, cwd } => {
                 self.run_command(program, args, cwd, cancellation).await
             }
+            ToolRequest::RememberMemory { text } => self.remember_memory(&text, cancellation),
+            ToolRequest::SearchMemory { query, limit } => {
+                self.search_memory(&query, limit, cancellation)
+            }
         }
+    }
+
+    fn remember_memory(
+        &self,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<ToolOutput, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let backend = self
+            .memory_backend
+            .as_ref()
+            .ok_or(ToolError::MemoryUnavailable)?;
+        Ok(ToolOutput::MemoryRemembered {
+            memory: backend.remember(text)?,
+        })
+    }
+
+    fn search_memory(
+        &self,
+        query: &str,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<ToolOutput, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let backend = self
+            .memory_backend
+            .as_ref()
+            .ok_or(ToolError::MemoryUnavailable)?;
+        Ok(ToolOutput::MemorySearch {
+            query: query.into(),
+            matches: backend.search(query, limit)?,
+        })
     }
 
     async fn list_directory(
@@ -461,14 +508,24 @@ fn child_process_path(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{
+        fs,
+        path::Path,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        },
+    };
 
     use tempfile::tempdir;
 
     use super::{ToolExecutor, ToolPolicy};
     use crate::{
         agent::CancellationToken,
-        tools::{ApprovalDecision, ToolExecution, ToolOutput, ToolRequest},
+        tools::{
+            ApprovalDecision, MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError,
+            ToolExecution, ToolOutput, ToolRequest,
+        },
     };
 
     #[tokio::test]
@@ -587,6 +644,151 @@ mod tests {
                 .map(|entry| entry.unwrap().file_name())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn denied_memory_tools_never_call_or_mutate_the_backend() {
+        let backend = Arc::new(CountingMemoryBackend::default());
+        let executor = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend.clone());
+
+        for request in [
+            ToolRequest::RememberMemory {
+                text: "do not store this".into(),
+            },
+            ToolRequest::SearchMemory {
+                query: "do not read this".into(),
+                limit: 5,
+            },
+        ] {
+            let proposal = executor.propose(request).unwrap();
+            executor
+                .resolve(
+                    &proposal.approval_token,
+                    ApprovalDecision::Deny {
+                        reason: Some("not approved".into()),
+                    },
+                )
+                .unwrap();
+            let execution = executor
+                .execute(&proposal.approval_token, &CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(matches!(execution, ToolExecution::Denied { .. }));
+        }
+
+        assert_eq!(backend.remember_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.search_calls.load(Ordering::SeqCst), 0);
+        assert!(backend.remembered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_backend_is_called_only_after_approved_token_is_consumed() {
+        let backend = Arc::new(CountingMemoryBackend::default());
+        let executor = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend.clone());
+        let proposal = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "approved memory".into(),
+            })
+            .unwrap();
+
+        assert!(executor
+            .execute(&proposal.approval_token, &CancellationToken::new())
+            .await
+            .is_err());
+        assert_eq!(backend.remember_calls.load(Ordering::SeqCst), 0);
+
+        executor
+            .resolve(&proposal.approval_token, ApprovalDecision::Approve)
+            .unwrap();
+        let execution = executor
+            .execute(&proposal.approval_token, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(
+            execution,
+            ToolExecution::Executed {
+                output: ToolOutput::MemoryRemembered { memory },
+                ..
+            } if memory.id == "memory-1" && memory.text == "approved memory"
+        ));
+        assert_eq!(backend.remember_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            backend.remembered.lock().unwrap().as_slice(),
+            ["approved memory"]
+        );
+        assert!(executor
+            .execute(&proposal.approval_token, &CancellationToken::new())
+            .await
+            .is_err());
+        assert_eq!(backend.remember_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_memory_execution_has_no_side_effect() {
+        let backend = Arc::new(CountingMemoryBackend::default());
+        let executor = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend.clone());
+        let proposal = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "cancelled memory".into(),
+            })
+            .unwrap();
+        executor
+            .resolve(&proposal.approval_token, ApprovalDecision::Approve)
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let execution = executor
+            .execute(&proposal.approval_token, &cancellation)
+            .await
+            .unwrap();
+        assert!(matches!(
+            execution,
+            ToolExecution::Failed {
+                error: ToolError::Cancelled,
+                ..
+            }
+        ));
+        assert_eq!(backend.remember_calls.load(Ordering::SeqCst), 0);
+        assert!(backend.remembered.lock().unwrap().is_empty());
+    }
+
+    #[derive(Default)]
+    struct CountingMemoryBackend {
+        remember_calls: AtomicUsize,
+        search_calls: AtomicUsize,
+        remembered: StdMutex<Vec<String>>,
+    }
+
+    impl MemoryBackend for CountingMemoryBackend {
+        fn remember(&self, text: &str) -> Result<RememberedMemory, ToolError> {
+            self.remember_calls.fetch_add(1, Ordering::SeqCst);
+            self.remembered.lock().unwrap().push(text.into());
+            Ok(RememberedMemory {
+                id: "memory-1".into(),
+                text: text.into(),
+                created_at_ms: 1,
+                original_bytes: 2048,
+                compressed_bytes: 161,
+                algorithm: "CrowQuant test".into(),
+            })
+        }
+
+        fn search(&self, query: &str, limit: usize) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            self.search_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![MemorySearchMatch {
+                id: "memory-1".into(),
+                text: format!("match for {query}"),
+                created_at_ms: 1,
+                score: limit as f64 / 20.0,
+            }])
+        }
     }
 
     #[cfg(windows)]
