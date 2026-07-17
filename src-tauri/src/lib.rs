@@ -1,6 +1,7 @@
 pub mod agent;
 mod app;
 pub mod crowquant;
+mod crowquant_memory;
 pub mod storage;
 pub mod tools;
 

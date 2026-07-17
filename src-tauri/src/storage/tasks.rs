@@ -2,7 +2,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
     json_to_value, now_ms, optional_json_to_value, optional_value_to_json, require_non_empty,
-    value_to_json, Storage, StorageError, StorageResult, StoredTask, TaskInput, TaskStatus,
+    value_to_json, MessageInput, MessageRole, Storage, StorageError, StorageResult, StoredTask,
+    TaskInput, TaskStatus,
 };
 
 impl Storage {
@@ -94,6 +95,13 @@ impl Storage {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current =
             task_from(&transaction, id)?.ok_or_else(|| StorageError::not_found("task", id))?;
+        if current.cancellation_requested
+            && matches!(next_status, TaskStatus::Succeeded | TaskStatus::Failed)
+        {
+            return Err(StorageError::Conflict(format!(
+                "task '{id}' has a cancellation request; only cancellation may finish it"
+            )));
+        }
         if !current.status.can_transition_to(next_status) {
             return Err(StorageError::Conflict(format!(
                 "task '{id}' cannot transition from {} to {}",
@@ -134,6 +142,113 @@ impl Storage {
             task_from(&transaction, id)?.ok_or_else(|| StorageError::not_found("task", id))?;
         transaction.commit()?;
         Ok(task)
+    }
+
+    /// Atomically wins terminal-state arbitration and, when supplied, appends
+    /// the assistant message belonging to that terminal result.
+    ///
+    /// The boolean is true only for the caller that performed the transition.
+    pub fn finish_task(
+        &self,
+        id: &str,
+        next_status: TaskStatus,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+        message: Option<&MessageInput>,
+    ) -> StorageResult<(StoredTask, bool)> {
+        require_non_empty("task id", id)?;
+        if !next_status.is_terminal() {
+            return Err(StorageError::InvalidData(
+                "finish_task requires a terminal status".into(),
+            ));
+        }
+        if next_status == TaskStatus::Succeeded && error.is_some() {
+            return Err(StorageError::InvalidData(
+                "a succeeded task cannot contain an error".into(),
+            ));
+        }
+        let metadata_json = message
+            .map(|message| {
+                require_non_empty("message id", &message.id)?;
+                require_non_empty("message conversation id", &message.conversation_id)?;
+                require_non_empty("message content", &message.content)?;
+                if message.role != MessageRole::Assistant {
+                    return Err(StorageError::InvalidData(
+                        "a terminal task message must have the assistant role".into(),
+                    ));
+                }
+                value_to_json(&message.metadata)
+            })
+            .transpose()?;
+        let now = now_ms()?;
+        let result_json = optional_value_to_json(result)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current =
+            task_from(&transaction, id)?.ok_or_else(|| StorageError::not_found("task", id))?;
+        if current.status == next_status {
+            return Ok((current, false));
+        }
+        if current.cancellation_requested
+            && matches!(next_status, TaskStatus::Succeeded | TaskStatus::Failed)
+        {
+            return Err(StorageError::Conflict(format!(
+                "task '{id}' has a cancellation request; only cancellation may finish it"
+            )));
+        }
+        if !current.status.can_transition_to(next_status) {
+            return Err(StorageError::Conflict(format!(
+                "task '{id}' cannot transition from {} to {}",
+                current.status.as_str(),
+                next_status.as_str()
+            )));
+        }
+        if let Some(message) = message {
+            if current.conversation_id.as_deref() != Some(&message.conversation_id) {
+                return Err(StorageError::InvalidData(
+                    "terminal task message conversation does not match the task".into(),
+                ));
+            }
+            let ordinal: i64 = transaction.query_row(
+                "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM messages WHERE conversation_id = ?1",
+                [&message.conversation_id],
+                |row| row.get(0),
+            )?;
+            transaction.execute(
+                r#"INSERT INTO messages (
+                       id, conversation_id, ordinal, role, content, metadata_json, created_at_ms
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                params![
+                    message.id,
+                    message.conversation_id,
+                    ordinal,
+                    message.role.as_str(),
+                    message.content,
+                    metadata_json
+                        .as_deref()
+                        .expect("validated message metadata"),
+                    now,
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1",
+                params![message.conversation_id, now],
+            )?;
+        }
+        transaction.execute(
+            r#"UPDATE tasks SET
+                   status = ?2,
+                   result_json = ?3,
+                   error = ?4,
+                   updated_at_ms = ?5,
+                   completed_at_ms = ?5
+               WHERE id = ?1"#,
+            params![id, next_status.as_str(), result_json, error, now],
+        )?;
+        let task =
+            task_from(&transaction, id)?.ok_or_else(|| StorageError::not_found("task", id))?;
+        transaction.commit()?;
+        Ok((task, true))
     }
 
     pub fn delete_task(&self, id: &str) -> StorageResult<bool> {

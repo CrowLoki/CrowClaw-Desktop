@@ -14,26 +14,34 @@ use uuid::Uuid;
 use crate::{
     agent::{
         AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession, CancellationToken, ChatMessage,
-        ChatRole, OpenAiCompatibleClient, ProviderConfig, ProviderHealthState, ProviderPreset,
+        ChatRole, OpenAiCompatibleClient, PendingToolCall, ProviderConfig, ProviderHealthState,
+        ProviderPreset,
     },
-    crowquant,
+    crowquant_memory::{
+        agent_memory_id, remembered_memory, CrowQuantMemoryService,
+        CrowQuantSearchHit as ServiceCrowQuantSearchHit,
+    },
     storage::{
         ActionStatus as StoredActionStatus, ConversationInput,
-        CrowQuantMemory as StoredCrowQuantMemory, CrowQuantMemoryInput, Message, MessageInput,
+        CrowQuantMemory as StoredCrowQuantMemory, Message, MessageInput,
         MessageRole as StoredMessageRole, ProposedAction as StoredAction, ProposedActionInput,
         ProviderProfile, ProviderProfileInput, Storage, StorageError, StoredTask, TaskInput,
         TaskStatus as StoredTaskStatus,
     },
-    tools::{ApprovalDecision, ProposedAction as RuntimeAction, ToolExecutor, ToolPolicy},
+    tools::{
+        ActionId, ApprovalDecision, ProposedAction as RuntimeAction, ToolExecution, ToolExecutor,
+        ToolOutput, ToolPolicy,
+    },
 };
 
 const SETTINGS_KEY: &str = "app_settings";
 const DEFAULT_PROVIDER_ID: &str = "crowclaw-default-provider";
 const TASK_EVENT: &str = "crowclaw://task-updated";
-const SYSTEM_PROMPT: &str = "You are CrowClaw, a local-first desktop AI agent. Be direct and useful. Use the supplied tools when the user asks to inspect a selected folder or run a local task. Never claim a tool ran until its actual returned tool result is present. The desktop application holds every tool action for explicit user approval.";
+const SYSTEM_PROMPT: &str = "You are CrowClaw, a local-first desktop AI agent. Be direct and useful. Use the supplied tools when the user asks to inspect a selected folder, run a local task, explicitly remember text, or search remembered text. CrowQuant memory retrieval is compressed lexical similarity, not a neural or semantic embedding. Never claim a tool ran until its actual returned tool result is present. The desktop application holds every tool action for explicit user approval.";
 
 pub struct AppState {
-    storage: Storage,
+    storage: Arc<Storage>,
+    crowquant: Arc<CrowQuantMemoryService>,
     selected_folders: Mutex<HashMap<String, PathBuf>>,
     active_tasks: Mutex<HashMap<String, Arc<LiveTask>>>,
     action_to_task: Mutex<HashMap<String, String>>,
@@ -49,35 +57,236 @@ struct LiveTask {
 
 impl AppState {
     pub fn open(app_data_directory: PathBuf) -> Result<Self, StorageError> {
-        let storage = Storage::open(app_data_directory)?;
+        let storage = Arc::new(Storage::open(app_data_directory)?);
+        let crowquant = Arc::new(CrowQuantMemoryService::new(storage.clone()));
 
         // Approval tokens are intentionally process-local. Reconcile stale work
         // safely rather than exposing an approval button that cannot execute.
-        for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Pending))? {
-            let _ = storage.deny_action(&action.id, Some("Interrupted by application restart"));
-        }
+        reconcile_actions_after_restart(&storage)?;
         for task in storage.list_tasks(None)? {
             if matches!(
                 task.status,
                 StoredTaskStatus::Queued | StoredTaskStatus::Running
             ) {
-                let _ = storage.update_task_status(
-                    &task.id,
-                    StoredTaskStatus::Failed,
-                    None,
-                    Some("Interrupted by application restart"),
-                );
+                if task.cancellation_requested {
+                    let _ = storage.update_task_status(
+                        &task.id,
+                        StoredTaskStatus::Cancelled,
+                        None,
+                        None,
+                    );
+                } else {
+                    let _ = storage.update_task_status(
+                        &task.id,
+                        StoredTaskStatus::Failed,
+                        None,
+                        Some("Interrupted by application restart"),
+                    );
+                }
             }
         }
 
         Ok(Self {
             storage,
+            crowquant,
             selected_folders: Mutex::new(HashMap::new()),
             active_tasks: Mutex::new(HashMap::new()),
             action_to_task: Mutex::new(HashMap::new()),
             session_api_keys: Mutex::new(HashMap::new()),
         })
     }
+}
+
+fn reconcile_actions_after_restart(storage: &Storage) -> Result<(), StorageError> {
+    for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Pending))? {
+        storage.deny_action(&action.id, Some("Interrupted by application restart"))?;
+    }
+    for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Approved))? {
+        if action.tool_name == "remember_memory" {
+            if let Ok(action_id) = ActionId::parse(&action.id) {
+                let memory_id = agent_memory_id(&action_id);
+                if let Some(memory) = storage.get_crowquant_memory(&memory_id)? {
+                    let execution = ToolExecution::Executed {
+                        action_id,
+                        output: ToolOutput::MemoryRemembered {
+                            memory: remembered_memory(memory),
+                        },
+                    };
+                    storage.record_action_success(&action.id, &serde_json::to_value(execution)?)?;
+                    continue;
+                }
+            }
+        }
+        storage.record_action_failure(
+            &action.id,
+            "Application stopped before the approved action returned a durable result",
+        )?;
+    }
+    Ok(())
+}
+
+fn interrupt_unexecuted_action(
+    storage: &Storage,
+    action_id: &str,
+    reason: &str,
+) -> Result<(), StorageError> {
+    let Some(action) = storage.get_proposed_action(action_id)? else {
+        return Ok(());
+    };
+    match action.status {
+        StoredActionStatus::Pending => {
+            storage.deny_action(action_id, Some(reason))?;
+        }
+        StoredActionStatus::Approved => {
+            storage.record_action_failure(action_id, reason)?;
+        }
+        StoredActionStatus::Denied | StoredActionStatus::Succeeded | StoredActionStatus::Failed => {
+        }
+    }
+    Ok(())
+}
+
+enum TaskSettlement {
+    Settled(Box<StoredTask>),
+    CancellationPending,
+}
+
+fn settle_task_with_message(
+    storage: &Storage,
+    task_id: &str,
+    status: StoredTaskStatus,
+    result: Option<&Value>,
+    error: Option<&str>,
+    message: Option<&MessageInput>,
+) -> Result<TaskSettlement, String> {
+    match storage.finish_task(task_id, status, result, error, message) {
+        Ok((task, _)) => Ok(TaskSettlement::Settled(Box::new(task))),
+        Err(settlement_error) => {
+            let current = storage
+                .get_task(task_id)
+                .map_err(display_error)?
+                .ok_or_else(|| "Task was not found".to_string())?;
+            if matches!(&settlement_error, StorageError::Conflict(_))
+                && (current.cancellation_requested || current.status == StoredTaskStatus::Cancelled)
+            {
+                Ok(TaskSettlement::CancellationPending)
+            } else {
+                Err(display_error(settlement_error))
+            }
+        }
+    }
+}
+
+fn task_cancellation_requested(storage: &Storage, task_id: &str) -> Result<bool, String> {
+    storage
+        .get_task(task_id)
+        .map_err(display_error)?
+        .map(|task| task.cancellation_requested || task.status == StoredTaskStatus::Cancelled)
+        .ok_or_else(|| "Task was not found".to_string())
+}
+
+struct TaskCancellationCoreResult {
+    task: StoredTask,
+    conversation_id: Option<String>,
+    newly_cancelled: bool,
+}
+
+async fn cancel_task_core(
+    state: &AppState,
+    task_id: &str,
+) -> Result<TaskCancellationCoreResult, String> {
+    let task = state
+        .storage
+        .get_task(task_id)
+        .map_err(display_error)?
+        .ok_or_else(|| "Task was not found".to_string())?;
+    if let Err(error) = state.storage.request_task_cancellation(task_id) {
+        let current = state
+            .storage
+            .get_task(task_id)
+            .map_err(display_error)?
+            .ok_or_else(|| "Task was not found".to_string())?;
+        if matches!(&error, StorageError::Conflict(_)) && current.status.is_terminal() {
+            let completing_live = state
+                .active_tasks
+                .lock()
+                .map_err(|_| "Active-task lock was poisoned".to_string())?
+                .get(task_id)
+                .cloned();
+            if let Some(live) = completing_live {
+                let _completed_session = live.session.lock().await;
+            }
+            let current = state
+                .storage
+                .get_task(task_id)
+                .map_err(display_error)?
+                .ok_or_else(|| "Task was not found".to_string())?;
+            return Ok(TaskCancellationCoreResult {
+                conversation_id: current.conversation_id.clone(),
+                task: current,
+                newly_cancelled: false,
+            });
+        }
+        return Err(display_error(error));
+    }
+
+    let live = state
+        .active_tasks
+        .lock()
+        .map_err(|_| "Active-task lock was poisoned".to_string())?
+        .get(task_id)
+        .cloned();
+    let conversation_id = task
+        .conversation_id
+        .clone()
+        .or_else(|| live.as_ref().map(|item| item.conversation_id.clone()));
+    if let Some(live) = &live {
+        live.cancellation.cancel();
+        let session = live.session.lock().await;
+        for pending in &session.pending_actions {
+            let action_id = pending.proposal.action_id.to_string();
+            let stored = state
+                .storage
+                .get_proposed_action(&action_id)
+                .map_err(display_error)?;
+            if stored.as_ref().map(|action| action.status) == Some(StoredActionStatus::Pending) {
+                live.runtime
+                    .resolve_action(
+                        &session,
+                        &pending.proposal.approval_token,
+                        ApprovalDecision::Deny {
+                            reason: Some("Task cancelled by user".into()),
+                        },
+                    )
+                    .map_err(display_error)?;
+            }
+            interrupt_unexecuted_action(&state.storage, &action_id, "Task cancelled by user")
+                .map_err(display_error)?;
+        }
+    }
+    let cancellation_message = conversation_id.as_ref().map(|conversation_id| MessageInput {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.clone(),
+        role: StoredMessageRole::Assistant,
+        content: "Task cancelled. Completed approved actions remain recorded; every unexecuted action was closed.".into(),
+        metadata: json!({ "taskId": task_id }),
+    });
+    let (cancelled, transitioned) = state
+        .storage
+        .finish_task(
+            task_id,
+            StoredTaskStatus::Cancelled,
+            None,
+            None,
+            cancellation_message.as_ref(),
+        )
+        .map_err(display_error)?;
+    remove_live_task(state, task_id)?;
+    Ok(TaskCancellationCoreResult {
+        conversation_id,
+        task: cancelled,
+        newly_cancelled: transitioned,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -360,6 +569,7 @@ pub struct ActionDecisionResult {
     task: AgentTaskView,
     pending_actions: Vec<PendingActionView>,
     memory: Option<MemoryRecord>,
+    memories: Vec<MemoryRecord>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -576,9 +786,8 @@ pub fn crowclaw_crowquant_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<CrowQuantMemoryView>, String> {
     state
-        .storage
-        .list_crowquant_memories()
-        .map_err(display_error)
+        .crowquant
+        .list_records()
         .map(|records| records.iter().map(crowquant_memory_view).collect())
 }
 
@@ -587,30 +796,7 @@ pub fn crowclaw_crowquant_remember(
     state: State<'_, AppState>,
     request: CrowQuantRememberRequest,
 ) -> Result<CrowQuantMemoryView, String> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err("Memory text cannot be empty".into());
-    }
-    if text.len() > 16 * 1024 {
-        return Err("Memory text cannot exceed 16 KiB".into());
-    }
-    let vector = crowquant::vectorize_text(text)?;
-    let block = crowquant::quantize(&vector)?;
-    let serialized = crowquant::serialize(&block);
-    let record = state
-        .storage
-        .create_crowquant_memory(&CrowQuantMemoryInput {
-            id: Uuid::new_v4().to_string(),
-            text: text.into(),
-            block: serialized,
-            format_version: 1,
-            algorithm: crowquant::ALGORITHM.into(),
-            dimension: block.dimension,
-            seed: block.seed,
-            bits: block.bits,
-            original_bytes: (vector.len() * std::mem::size_of::<f64>()) as u64,
-        })
-        .map_err(display_error)?;
+    let record = state.crowquant.remember_record(&request.text)?;
     Ok(crowquant_memory_view(&record))
 }
 
@@ -619,41 +805,10 @@ pub fn crowclaw_crowquant_recall(
     state: State<'_, AppState>,
     request: CrowQuantRecallRequest,
 ) -> Result<Vec<CrowQuantSearchHit>, String> {
-    let query = request.query.trim();
-    if query.is_empty() {
-        return Err("Memory query cannot be empty".into());
-    }
-    let limit = request.limit.clamp(1, 20);
-    let query_block = crowquant::quantize(&crowquant::vectorize_text(query)?)?;
-    let mut hits = state
-        .storage
-        .list_crowquant_memories()
-        .map_err(display_error)?
-        .into_iter()
-        .map(|record| {
-            let block = crowquant::deserialize(&record.block)?;
-            if block.dimension != query_block.dimension
-                || block.seed != query_block.seed
-                || block.bits != query_block.bits
-            {
-                return Err("Stored CrowQuant memory uses incompatible settings".to_string());
-            }
-            let score = crowquant::compressed_cosine(&query_block, &block)?;
-            Ok(CrowQuantSearchHit {
-                memory: crowquant_memory_view(&record),
-                score,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.memory.created_at.cmp(&left.memory.created_at))
-    });
-    hits.truncate(limit);
-    Ok(hits)
+    state
+        .crowquant
+        .search_records(&request.query, request.limit)
+        .map(|hits| hits.into_iter().map(crowquant_search_hit_view).collect())
 }
 
 #[tauri::command]
@@ -736,7 +891,9 @@ pub async fn crowclaw_chat_send(
     let runtime = Arc::new(
         AgentRuntime::new(
             provider,
-            ToolExecutor::new(policy).map_err(display_error)?,
+            ToolExecutor::new(policy)
+                .map_err(display_error)?
+                .with_memory_backend(state.crowquant.clone()),
             AgentLimits::default(),
         )
         .map_err(display_error)?,
@@ -785,58 +942,71 @@ pub async fn crowclaw_chat_send(
         .insert(task_id.clone(), live.clone());
     emit_task(&app, &state.storage, &running)?;
 
-    let outcome = {
-        let mut session = live.session.lock().await;
-        live.runtime
-            .run_until_blocked(&mut session, &live.cancellation)
-            .await
-    };
+    let mut session = live.session.lock().await;
+    let outcome = live
+        .runtime
+        .run_until_blocked(&mut session, &live.cancellation)
+        .await;
     let pending_actions = match outcome {
         Ok(AgentRunOutcome::Completed { message, .. }) => {
-            persist_assistant_message(&state.storage, &conversation.id, &task_id, &message)?;
-            let completed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Succeeded,
-                    Some(&json!({ "message": message.content })),
-                    None,
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &completed)?;
-            Vec::new()
-        }
-        Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
-            let views = persist_runtime_actions(&state, &conversation.id, &task_id, &actions)?;
-            let current = state
-                .storage
-                .get_task(&task_id)
-                .map_err(display_error)?
-                .ok_or_else(|| "Task was not found".to_string())?;
-            emit_task(&app, &state.storage, &current)?;
-            views
-        }
-        Err(error) => {
-            if matches!(error, crate::agent::AgentError::Cancelled) {
-                remove_live_task(&state, &task_id)?;
-                Vec::new()
-            } else {
-                let failed = state
-                    .storage
-                    .update_task_status(
-                        &task_id,
-                        StoredTaskStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                    )
-                    .map_err(display_error)?;
-                remove_live_task(&state, &task_id)?;
-                emit_task(&app, &state.storage, &failed)?;
-                return Err(error.to_string());
+            let result = json!({ "message": message.content });
+            let terminal_message = assistant_message_input(
+                &conversation.id,
+                &task_id,
+                message
+                    .content
+                    .as_deref()
+                    .unwrap_or("CrowClaw completed the task without a text response."),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Succeeded,
+                Some(&result),
+                None,
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(completed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &completed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
             }
         }
+        Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
+            if task_cancellation_requested(&state.storage, &task_id)? {
+                Vec::new()
+            } else {
+                let views = persist_runtime_actions(&state, &conversation.id, &task_id, &actions)?;
+                let current = state
+                    .storage
+                    .get_task(&task_id)
+                    .map_err(display_error)?
+                    .ok_or_else(|| "Task was not found".to_string())?;
+                emit_task(&app, &state.storage, &current)?;
+                views
+            }
+        }
+        Err(error) if error.is_cancelled() => Vec::new(),
+        Err(error) => match settle_task_with_message(
+            &state.storage,
+            &task_id,
+            StoredTaskStatus::Failed,
+            None,
+            Some(&error.to_string()),
+            None,
+        )? {
+            TaskSettlement::Settled(failed) => {
+                remove_live_task(&state, &task_id)?;
+                emit_task(&app, &state.storage, &failed)?;
+                drop(session);
+                return Err(error.to_string());
+            }
+            TaskSettlement::CancellationPending => Vec::new(),
+        },
     };
+    drop(session);
     chat_result(&state.storage, &conversation.id, &task_id, pending_actions).map_err(display_error)
 }
 
@@ -846,70 +1016,19 @@ pub async fn crowclaw_task_cancel(
     state: State<'_, AppState>,
     request: TaskRequest,
 ) -> Result<TaskCancellationResult, String> {
-    let live = state
-        .active_tasks
-        .lock()
-        .map_err(|_| "Active-task lock was poisoned".to_string())?
-        .get(&request.task_id)
-        .cloned();
-    if let Some(live) = &live {
-        live.cancellation.cancel();
+    let core = cancel_task_core(&state, &request.task_id).await?;
+    if core.newly_cancelled {
+        emit_task(&app, &state.storage, &core.task)?;
     }
-    let task = state
-        .storage
-        .get_task(&request.task_id)
-        .map_err(display_error)?
-        .ok_or_else(|| "Task was not found".to_string())?;
-    state
-        .storage
-        .request_task_cancellation(&task.id)
-        .map_err(display_error)?;
-
-    if let Some(live) = &live {
-        let session = live.session.lock().await;
-        for pending in &session.pending_actions {
-            let action_id = pending.proposal.action_id.to_string();
-            let _ = live.runtime.resolve_action(
-                &session,
-                &pending.proposal.approval_token,
-                ApprovalDecision::Deny {
-                    reason: Some("Task cancelled by user".into()),
-                },
-            );
-            let _ = state
-                .storage
-                .deny_action(&action_id, Some("Task cancelled by user"));
-        }
-    }
-    let cancelled = state
-        .storage
-        .update_task_status(&task.id, StoredTaskStatus::Cancelled, None, None)
-        .map_err(display_error)?;
-    remove_live_task(&state, &task.id)?;
-    let conversation_id = task
+    let conversation = core
         .conversation_id
-        .or_else(|| live.as_ref().map(|item| item.conversation_id.clone()));
-    if let Some(conversation_id) = &conversation_id {
-        state
-            .storage
-            .append_message(&MessageInput {
-                id: Uuid::new_v4().to_string(),
-                conversation_id: conversation_id.clone(),
-                role: StoredMessageRole::Assistant,
-                content: "Task cancelled. No further action was taken.".into(),
-                metadata: json!({ "taskId": task.id }),
-            })
-            .map_err(display_error)?;
-    }
-    emit_task(&app, &state.storage, &cancelled)?;
-    let conversation = conversation_id
         .as_deref()
         .map(|id| conversation_view(&state.storage, id))
         .transpose()
         .map_err(display_error)?;
     let summary = conversation.as_ref().map(summary_for);
     Ok(TaskCancellationResult {
-        task: task_view(&state.storage, &cancelled).map_err(display_error)?,
+        task: task_view(&state.storage, &core.task).map_err(display_error)?,
         conversation,
         summary,
     })
@@ -936,12 +1055,14 @@ pub async fn crowclaw_action_decide(
         .cloned()
         .ok_or_else(|| "The action task is no longer active".to_string())?;
     let mut session = live.session.lock().await;
-    let proposal = session
+    let pending_call = session
         .pending_actions
         .iter()
         .find(|pending| pending.proposal.action_id.to_string() == request.action_id)
-        .map(|pending| pending.proposal.clone())
+        .cloned()
         .ok_or_else(|| "That action is no longer pending".to_string())?;
+    let proposal = pending_call.proposal.clone();
+    let pending_before_run = session.pending_actions.clone();
 
     let approved = matches!(request.decision, ActionDecisionRequest::Approved);
     if approved {
@@ -977,15 +1098,20 @@ pub async fn crowclaw_action_decide(
         .runtime
         .run_until_blocked(&mut session, &live.cancellation)
         .await;
-    let mut memory = None;
-    if approved {
-        memory = record_tool_execution(
-            &state.storage,
-            &request.action_id,
-            &session.messages[before_message_len.min(session.messages.len())..],
-        )?;
-    }
-    drop(session);
+    let recorded = record_tool_executions(
+        &state.storage,
+        &pending_before_run,
+        &session.messages[before_message_len.min(session.messages.len())..],
+    )?;
+    let memories = recorded
+        .iter()
+        .map(|(_, memory)| memory.clone())
+        .collect::<Vec<_>>();
+    let memory = recorded
+        .iter()
+        .find(|(action_id, _)| action_id == &request.action_id)
+        .or_else(|| recorded.first())
+        .map(|(_, memory)| memory.clone());
     state
         .action_to_task
         .lock()
@@ -994,56 +1120,71 @@ pub async fn crowclaw_action_decide(
 
     let pending_actions = match run {
         Ok(AgentRunOutcome::Completed { message, .. }) => {
-            persist_assistant_message(&state.storage, &live.conversation_id, &task_id, &message)?;
-            let completed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Succeeded,
-                    Some(&json!({ "message": message.content })),
-                    None,
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &completed)?;
-            Vec::new()
+            let result = json!({ "message": message.content });
+            let terminal_message = assistant_message_input(
+                &live.conversation_id,
+                &task_id,
+                message
+                    .content
+                    .as_deref()
+                    .unwrap_or("CrowClaw completed the task without a text response."),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Succeeded,
+                Some(&result),
+                None,
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(completed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &completed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
+            }
         }
         Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
-            let pending =
-                persist_runtime_actions(&state, &live.conversation_id, &task_id, &actions)?;
-            let current = state
-                .storage
-                .get_task(&task_id)
-                .map_err(display_error)?
-                .ok_or_else(|| "Task was not found".to_string())?;
-            emit_task(&app, &state.storage, &current)?;
-            pending
+            if task_cancellation_requested(&state.storage, &task_id)? {
+                Vec::new()
+            } else {
+                let pending =
+                    persist_runtime_actions(&state, &live.conversation_id, &task_id, &actions)?;
+                let current = state
+                    .storage
+                    .get_task(&task_id)
+                    .map_err(display_error)?
+                    .ok_or_else(|| "Task was not found".to_string())?;
+                emit_task(&app, &state.storage, &current)?;
+                pending
+            }
         }
+        Err(error) if error.is_cancelled() => Vec::new(),
         Err(error) => {
-            state
-                .storage
-                .append_message(&MessageInput {
-                    id: Uuid::new_v4().to_string(),
-                    conversation_id: live.conversation_id.clone(),
-                    role: StoredMessageRole::Assistant,
-                    content: format!("The approved task stopped safely: {error}"),
-                    metadata: json!({ "taskId": task_id }),
-                })
-                .map_err(display_error)?;
-            let failed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Failed,
-                    None,
-                    Some(&error.to_string()),
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &failed)?;
-            Vec::new()
+            let terminal_message = assistant_message_input(
+                &live.conversation_id,
+                &task_id,
+                &format!("The approved task stopped safely: {error}"),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Failed,
+                None,
+                Some(&error.to_string()),
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(failed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &failed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
+            }
         }
     };
+    drop(session);
 
     let conversation =
         conversation_view(&state.storage, &live.conversation_id).map_err(display_error)?;
@@ -1058,6 +1199,7 @@ pub async fn crowclaw_action_decide(
         task: task_view(&state.storage, &stored_task).map_err(display_error)?,
         pending_actions,
         memory,
+        memories,
     })
 }
 
@@ -1309,12 +1451,12 @@ fn pending_action_from_stored(action: &StoredAction) -> Option<PendingActionView
         kind: action_kind(&action.tool_name),
         title: action_title(&action.tool_name).into(),
         summary: action.summary.clone(),
-        target: action_target(&action.request),
+        target: action_target(&action.tool_name, &action.request),
         details: action_details(&action.tool_name, &action.request),
-        risk: if action.tool_name == "run_command" {
-            "high"
-        } else {
-            "low"
+        risk: match action.tool_name.as_str() {
+            "run_command" => "high",
+            "remember_memory" | "search_memory" => "medium",
+            _ => "low",
         },
         requested_at: iso(action.created_at_ms),
     })
@@ -1361,57 +1503,106 @@ fn persist_runtime_actions(
     Ok(views)
 }
 
-fn persist_assistant_message(
-    storage: &Storage,
-    conversation_id: &str,
-    task_id: &str,
-    message: &ChatMessage,
-) -> Result<(), String> {
-    let content = message
-        .content
-        .as_deref()
-        .unwrap_or("CrowClaw completed the task without a text response.");
-    storage
-        .append_message(&MessageInput {
-            id: Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.into(),
-            role: StoredMessageRole::Assistant,
-            content: content.into(),
-            metadata: json!({ "taskId": task_id }),
-        })
-        .map_err(display_error)?;
-    Ok(())
+fn assistant_message_input(conversation_id: &str, task_id: &str, content: &str) -> MessageInput {
+    MessageInput {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.into(),
+        role: StoredMessageRole::Assistant,
+        content: content.into(),
+        metadata: json!({ "taskId": task_id }),
+    }
 }
 
-fn record_tool_execution(
+fn record_tool_executions(
     storage: &Storage,
-    action_id: &str,
+    pending: &[PendingToolCall],
     messages: &[ChatMessage],
-) -> Result<Option<MemoryRecord>, String> {
-    let tool_result = messages
-        .iter()
-        .rev()
-        .find(|message| message.role == ChatRole::Tool)
-        .and_then(|message| message.content.as_deref())
-        .and_then(|content| serde_json::from_str::<Value>(content).ok())
-        .unwrap_or_else(|| json!({ "state": "failed", "error": "Tool result was not captured" }));
-    if tool_result.get("state").and_then(Value::as_str) == Some("failed") {
-        storage
-            .record_action_failure(action_id, &tool_result.to_string())
-            .map_err(display_error)?;
-        return Ok(None);
+) -> Result<Vec<(String, MemoryRecord)>, String> {
+    let mut recorded = Vec::new();
+    for call in pending {
+        let Some(message) = messages.iter().find(|message| {
+            message.role == ChatRole::Tool
+                && message.tool_call_id.as_deref() == Some(&call.provider_tool_call_id)
+        }) else {
+            continue;
+        };
+        let action_id = call.proposal.action_id.to_string();
+        let validation_error = if message.name.as_deref() != Some(&call.proposal.tool_name) {
+            Some(format!(
+                "Tool result name did not match approved action: expected {:?}, received {:?}",
+                call.proposal.tool_name, message.name
+            ))
+        } else {
+            match message
+                .content
+                .as_deref()
+                .ok_or_else(|| "Tool result had no content".to_string())
+                .and_then(|content| {
+                    serde_json::from_str::<ToolExecution>(content)
+                        .map_err(|error| format!("Tool returned an invalid result: {error}"))
+                }) {
+                Ok(execution) if execution_action_id(&execution) == &call.proposal.action_id => {
+                    let tool_result = serde_json::to_value(&execution).map_err(display_error)?;
+                    match execution {
+                        ToolExecution::Executed { .. } => {
+                            let action = storage
+                                .record_action_success(&action_id, &tool_result)
+                                .map_err(display_error)?;
+                            recorded.push((action_id.clone(), memory_from_action(&action)));
+                        }
+                        ToolExecution::Failed { error, .. } => {
+                            storage
+                                .record_action_failure(&action_id, &error.to_string())
+                                .map_err(display_error)?;
+                        }
+                        ToolExecution::Denied { .. } => {
+                            // The user's denial was already durably recorded before the
+                            // runtime received the decision. Do not rewrite it as success.
+                        }
+                    }
+                    None
+                }
+                Ok(execution) => Some(format!(
+                    "Tool result action ID did not match approved action: expected {action_id}, received {}",
+                    execution_action_id(&execution)
+                )),
+                Err(error) => Some(error),
+            }
+        };
+        if let Some(error) = validation_error {
+            if storage
+                .get_proposed_action(&action_id)
+                .map_err(display_error)?
+                .is_some_and(|action| action.status == StoredActionStatus::Approved)
+            {
+                let action = storage
+                    .record_action_failure(&action_id, &error)
+                    .map_err(display_error)?;
+                debug_assert_eq!(action.status, StoredActionStatus::Failed);
+            }
+            return Err(error);
+        }
     }
-    let action = storage
-        .record_action_success(action_id, &tool_result)
-        .map_err(display_error)?;
-    Ok(Some(memory_from_action(&action)))
+    Ok(recorded)
+}
+
+fn execution_action_id(execution: &ToolExecution) -> &ActionId {
+    match execution {
+        ToolExecution::Executed { action_id, .. }
+        | ToolExecution::Denied { action_id, .. }
+        | ToolExecution::Failed { action_id, .. } => action_id,
+    }
 }
 
 fn memory_from_action(action: &StoredAction) -> MemoryRecord {
     MemoryRecord {
         id: format!("memory-{}", action.id),
         title: format!("Approved {}", action.tool_name.replace('_', " ")),
-        preview: format!("{} — {}", action.summary, action_target(&action.request)),
+        preview: format!(
+            "{} — {}",
+            action.summary,
+            action_target(&action.tool_name, &action.request)
+        ),
         source: "approved-action",
         conversation_id: Some(action.conversation_id.clone()),
         created_at: iso(action.updated_at_ms),
@@ -1433,6 +1624,13 @@ fn crowquant_memory_view(memory: &StoredCrowQuantMemory) -> CrowQuantMemoryView 
             memory.original_bytes as f64 / compressed_bytes as f64
         },
         algorithm: memory.algorithm.clone(),
+    }
+}
+
+fn crowquant_search_hit_view(hit: ServiceCrowQuantSearchHit) -> CrowQuantSearchHit {
+    CrowQuantSearchHit {
+        memory: crowquant_memory_view(&hit.memory),
+        score: hit.score,
     }
 }
 
@@ -1502,6 +1700,7 @@ fn remove_live_task(state: &AppState, task_id: &str) -> Result<(), String> {
 fn action_kind(tool_name: &str) -> &'static str {
     match tool_name {
         "run_command" => "run-command",
+        "remember_memory" | "search_memory" => "memory",
         _ => "read-files",
     }
 }
@@ -1511,11 +1710,16 @@ fn action_title(tool_name: &str) -> &'static str {
         "list_directory" => "List a selected folder",
         "read_text_file" => "Read a selected text file",
         "run_command" => "Run a local command",
+        "remember_memory" => "Remember text with CrowQuant",
+        "search_memory" => "Search CrowQuant memory",
         _ => "Run a local action",
     }
 }
 
-fn action_target(request: &Value) -> String {
+fn action_target(tool_name: &str, request: &Value) -> String {
+    if matches!(tool_name, "remember_memory" | "search_memory") {
+        return "CrowClaw local CrowQuant memory".into();
+    }
     request
         .get("path")
         .or_else(|| request.get("cwd"))
@@ -1533,14 +1737,39 @@ fn action_details(tool_name: &str, request: &Value) -> Vec<String> {
             "Do not read file contents in this action".into(),
         ],
         "read_text_file" => vec![
-            format!("Read only {}", action_target(request)),
+            format!("Read only {}", action_target(tool_name, request)),
             "Reject binary files and enforce the size boundary".into(),
             "Return the actual approved contents to the local model".into(),
         ],
         "run_command" => vec![
-            format!("Run the requested program in {}", action_target(request)),
+            format!(
+                "Run the requested program in {}",
+                action_target(tool_name, request)
+            ),
             "Capture bounded output".into(),
             "Stop on cancellation or timeout".into(),
+        ],
+        "remember_memory" => vec![
+            format!(
+                "Store exactly this text: {:?}",
+                request.get("text").and_then(Value::as_str).unwrap_or("")
+            ),
+            "Create one native CrowQuant compressed lexical record in the local SQLite database"
+                .into(),
+            "Return the created memory ID and measured compression metadata to the connected model and approved-action audit"
+                .into(),
+        ],
+        "search_memory" => vec![
+            format!(
+                "Search for exactly: {:?}",
+                request.get("query").and_then(Value::as_str).unwrap_or("")
+            ),
+            format!(
+                "Return up to {} top-ranked compressed-lexical results",
+                request.get("limit").and_then(Value::as_u64).unwrap_or(5)
+            ),
+            "Read and return top-ranked stored text with compressed lexical similarity scores to the connected model and approved-action audit"
+                .into(),
         ],
         _ => vec!["Run only the action shown here".into()],
     }
@@ -1571,4 +1800,846 @@ fn iso(milliseconds: i64) -> String {
 
 fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, Condvar, Mutex as StdMutex},
+        time::Duration,
+    };
+
+    use async_trait::async_trait;
+    use serde_json::json;
+    use tempfile::tempdir;
+    use tokio::sync::Notify;
+
+    use super::{
+        action_details, action_kind, action_target, action_title, cancel_task_core,
+        interrupt_unexecuted_action, record_tool_executions, AppState, LiveTask,
+    };
+    use crate::{
+        agent::{
+            AgentLimits, AgentRuntime, AgentSession, CancellationToken, ChatCompletion,
+            ChatCompletionRequest, ChatMessage, ChatProvider, PendingToolCall, ProviderError,
+        },
+        crowquant_memory::{agent_memory_id, CrowQuantMemoryService},
+        storage::{
+            ActionStatus, ConversationInput, ProposedActionInput, Storage, TaskInput, TaskStatus,
+        },
+        tools::{
+            MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError, ToolExecution,
+            ToolExecutor, ToolOutput, ToolPolicy, ToolRequest,
+        },
+    };
+
+    #[test]
+    fn memory_approval_copy_is_explicit_about_text_query_limit_and_exposure() {
+        let remember = json!({
+            "type": "remember_memory",
+            "text": "exact memory text"
+        });
+        assert_eq!(action_kind("remember_memory"), "memory");
+        assert_eq!(
+            action_title("remember_memory"),
+            "Remember text with CrowQuant"
+        );
+        assert_eq!(
+            action_target("remember_memory", &remember),
+            "CrowClaw local CrowQuant memory"
+        );
+        assert!(action_details("remember_memory", &remember)
+            .join(" ")
+            .contains("exact memory text"));
+
+        let search = json!({
+            "type": "search_memory",
+            "query": "exact search query",
+            "limit": 7
+        });
+        let details = action_details("search_memory", &search).join(" ");
+        assert!(details.contains("exact search query"));
+        assert!(details.contains('7'));
+        assert!(details.contains("connected model and approved-action audit"));
+    }
+
+    #[test]
+    fn batched_tool_results_are_audited_by_exact_provider_call_id() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Memory batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let remember = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "qubit calibration".into(),
+            })
+            .unwrap();
+        let search = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "qubit".into(),
+                limit: 3,
+            })
+            .unwrap();
+        for action in [&remember, &search] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+            storage
+                .approve_action(&action.action_id.to_string(), Some("test approval"))
+                .unwrap();
+        }
+        let pending = vec![
+            PendingToolCall {
+                provider_tool_call_id: "call-remember".into(),
+                proposal: remember.clone(),
+            },
+            PendingToolCall {
+                provider_tool_call_id: "call-search".into(),
+                proposal: search.clone(),
+            },
+        ];
+        let remember_result = ToolExecution::Executed {
+            action_id: remember.action_id.clone(),
+            output: ToolOutput::MemoryRemembered {
+                memory: RememberedMemory {
+                    id: "remembered-row".into(),
+                    text: "qubit calibration".into(),
+                    created_at_ms: 1,
+                    original_bytes: 2048,
+                    compressed_bytes: 161,
+                    algorithm: "CrowQuant test".into(),
+                },
+            },
+        };
+        let search_result = ToolExecution::Executed {
+            action_id: search.action_id.clone(),
+            output: ToolOutput::MemorySearch {
+                query: "qubit".into(),
+                results: vec![MemorySearchMatch {
+                    id: "searched-row".into(),
+                    text: "stored qubit record".into(),
+                    created_at_ms: 1,
+                    score: 0.8,
+                }],
+            },
+        };
+        // Deliberately reverse the result order: newest-message guessing would
+        // bind these to the wrong stored actions.
+        let messages = vec![
+            ChatMessage::tool(
+                "call-search",
+                "search_memory",
+                serde_json::to_string(&search_result).unwrap(),
+            ),
+            ChatMessage::tool(
+                "call-remember",
+                "remember_memory",
+                serde_json::to_string(&remember_result).unwrap(),
+            ),
+        ];
+
+        let recorded = record_tool_executions(&storage, &pending, &messages).unwrap();
+        assert_eq!(recorded.len(), 2);
+        let stored_remember = storage
+            .get_proposed_action(&remember.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        let stored_search = storage
+            .get_proposed_action(&search.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_remember.status, ActionStatus::Succeeded);
+        assert_eq!(stored_search.status, ActionStatus::Succeeded);
+        assert_eq!(
+            stored_remember
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some("remembered-row")
+        );
+        assert_eq!(
+            stored_search
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/results/0/id"))
+                .and_then(|value| value.as_str()),
+            Some("searched-row")
+        );
+    }
+
+    #[test]
+    fn mismatched_embedded_action_id_is_failed_instead_of_misaudited() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Memory mismatch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let expected = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "qubit".into(),
+                limit: 3,
+            })
+            .unwrap();
+        let wrong = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "grocery".into(),
+                limit: 3,
+            })
+            .unwrap();
+        storage
+            .create_proposed_action(&ProposedActionInput {
+                id: expected.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: None,
+                tool_name: expected.tool_name.clone(),
+                summary: expected.summary.clone(),
+                request: serde_json::to_value(&expected.request).unwrap(),
+            })
+            .unwrap();
+        storage
+            .approve_action(&expected.action_id.to_string(), Some("test approval"))
+            .unwrap();
+        let pending = vec![PendingToolCall {
+            provider_tool_call_id: "call-search".into(),
+            proposal: expected.clone(),
+        }];
+        let mismatched = ToolExecution::Executed {
+            action_id: wrong.action_id,
+            output: ToolOutput::MemorySearch {
+                query: "grocery".into(),
+                results: Vec::new(),
+            },
+        };
+        let messages = vec![ChatMessage::tool(
+            "call-search",
+            "search_memory",
+            serde_json::to_string(&mismatched).unwrap(),
+        )];
+
+        let error = record_tool_executions(&storage, &pending, &messages).unwrap_err();
+        assert!(error.contains("action ID did not match"));
+        let stored = storage
+            .get_proposed_action(&expected.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ActionStatus::Failed);
+        assert!(stored
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("action ID did not match")));
+    }
+
+    #[test]
+    fn cancellation_closes_approved_and_pending_batch_actions() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Cancelled batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let approved = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "approved but not executed".into(),
+            })
+            .unwrap();
+        let pending = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "still pending".into(),
+                limit: 3,
+            })
+            .unwrap();
+        for action in [&approved, &pending] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+        }
+        storage
+            .approve_action(&approved.action_id.to_string(), Some("approved once"))
+            .unwrap();
+
+        for action in [&approved, &pending] {
+            interrupt_unexecuted_action(
+                &storage,
+                &action.action_id.to_string(),
+                "Task cancelled by user",
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            storage
+                .get_proposed_action(&approved.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Failed
+        );
+        assert_eq!(
+            storage
+                .get_proposed_action(&pending.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Denied
+        );
+    }
+
+    #[test]
+    fn restart_closes_approved_and_pending_batch_actions() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Restarted batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let approved = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "approved but not executed".into(),
+                limit: 3,
+            })
+            .unwrap();
+        let pending = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "still pending".into(),
+            })
+            .unwrap();
+        for action in [&approved, &pending] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+        }
+        storage
+            .approve_action(&approved.action_id.to_string(), Some("approved once"))
+            .unwrap();
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .storage
+                .get_proposed_action(&approved.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Failed
+        );
+        assert_eq!(
+            reopened
+                .storage
+                .get_proposed_action(&pending.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Denied
+        );
+    }
+
+    #[test]
+    fn restart_finishes_a_durable_cancellation_request_as_cancelled() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_task(&TaskInput {
+                id: "task-cancellation-restart".into(),
+                conversation_id: None,
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Cancellation restart" }),
+            })
+            .unwrap();
+        storage
+            .update_task_status("task-cancellation-restart", TaskStatus::Running, None, None)
+            .unwrap();
+        storage
+            .request_task_cancellation("task-cancellation-restart")
+            .unwrap();
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .storage
+                .get_task("task-cancellation-restart")
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn restart_recovers_action_audit_after_durable_remember_insert() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(directory.path()).unwrap());
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Recovered memory".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let action = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "durable before audit".into(),
+            })
+            .unwrap();
+        storage
+            .create_proposed_action(&ProposedActionInput {
+                id: action.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: None,
+                tool_name: action.tool_name.clone(),
+                summary: action.summary.clone(),
+                request: serde_json::to_value(&action.request).unwrap(),
+            })
+            .unwrap();
+        storage
+            .approve_action(&action.action_id.to_string(), Some("approved once"))
+            .unwrap();
+        let service = CrowQuantMemoryService::new(storage.clone());
+        let inserted = service
+            .remember_agent_record(
+                &action.action_id,
+                "durable before audit",
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(inserted.id, agent_memory_id(&action.action_id));
+        drop(service);
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        let stored = reopened
+            .storage
+            .get_proposed_action(&action.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ActionStatus::Succeeded);
+        assert_eq!(
+            stored
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some(agent_memory_id(&action.action_id).as_str())
+        );
+        assert_eq!(reopened.storage.list_crowquant_memories().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_during_approved_memory_execution_converges_on_cancelled() {
+        let directory = tempdir().unwrap();
+        let state = Arc::new(AppState::open(directory.path().to_path_buf()).unwrap());
+        let backend = Arc::new(BlockingCancellationMemory::default());
+        let (live, pending) = install_approved_memory_task(
+            &state,
+            "task-memory-execution",
+            Arc::new(UnusedProvider),
+            backend.clone(),
+        );
+        let action_id = pending.proposal.action_id.to_string();
+        let resumed = tokio::spawn(resume_pending_action(state.clone(), live, pending));
+
+        backend.wait_until_entered();
+        let (first_cancel, second_cancel) = tokio::join!(
+            cancel_task_core(&state, "task-memory-execution"),
+            cancel_task_core(&state, "task-memory-execution")
+        );
+        let first_cancel = first_cancel.unwrap();
+        let second_cancel = second_cancel.unwrap();
+        resumed.await.unwrap().unwrap();
+
+        assert_eq!(
+            usize::from(first_cancel.newly_cancelled) + usize::from(second_cancel.newly_cancelled),
+            1
+        );
+        assert_eq!(first_cancel.task.status, TaskStatus::Cancelled);
+        assert_eq!(second_cancel.task.status, TaskStatus::Cancelled);
+        let action = state
+            .storage
+            .get_proposed_action(&action_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.status, ActionStatus::Failed);
+        assert!(action
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancelled")));
+        assert!(state.active_tasks.lock().unwrap().is_empty());
+        assert!(state.action_to_task.lock().unwrap().is_empty());
+        let messages = state.storage.list_messages("conversation-1").unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.content.starts_with("Task cancelled."))
+                .count(),
+            1
+        );
+        assert!(messages
+            .iter()
+            .all(|message| !message.content.contains("stopped safely")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_post_tool_provider_call_preserves_action_success_and_cancels_task() {
+        let directory = tempdir().unwrap();
+        let state = Arc::new(AppState::open(directory.path().to_path_buf()).unwrap());
+        let provider = Arc::new(CancellationProvider::default());
+        let (live, pending) = install_approved_memory_task(
+            &state,
+            "task-provider-call",
+            provider.clone(),
+            Arc::new(ImmediateMemory),
+        );
+        let action_id = pending.proposal.action_id.to_string();
+        let resumed = tokio::spawn(resume_pending_action(state.clone(), live, pending));
+
+        provider.wait_until_entered().await;
+        let cancelled = cancel_task_core(&state, "task-provider-call")
+            .await
+            .unwrap();
+        resumed.await.unwrap().unwrap();
+
+        assert!(cancelled.newly_cancelled);
+        assert_eq!(cancelled.task.status, TaskStatus::Cancelled);
+        let action = state
+            .storage
+            .get_proposed_action(&action_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.status, ActionStatus::Succeeded);
+        assert_eq!(
+            action
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some("completed-before-provider")
+        );
+        assert!(state.active_tasks.lock().unwrap().is_empty());
+        assert!(state.action_to_task.lock().unwrap().is_empty());
+        assert_eq!(
+            state
+                .storage
+                .list_messages("conversation-1")
+                .unwrap()
+                .iter()
+                .filter(|message| message.content.starts_with("Task cancelled."))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_first_cancel_request_returns_existing_terminal_task() {
+        let directory = tempdir().unwrap();
+        let state = AppState::open(directory.path().to_path_buf()).unwrap();
+        state
+            .storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Completion first".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        state
+            .storage
+            .create_task(&TaskInput {
+                id: "task-completed".into(),
+                conversation_id: Some("conversation-1".into()),
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Completion first" }),
+            })
+            .unwrap();
+        state
+            .storage
+            .update_task_status("task-completed", TaskStatus::Running, None, None)
+            .unwrap();
+        state
+            .storage
+            .update_task_status(
+                "task-completed",
+                TaskStatus::Succeeded,
+                Some(&json!({ "finished": true })),
+                None,
+            )
+            .unwrap();
+
+        let result = cancel_task_core(&state, "task-completed").await.unwrap();
+        assert!(!result.newly_cancelled);
+        assert_eq!(result.task.status, TaskStatus::Succeeded);
+        assert!(!result.task.cancellation_requested);
+        assert!(state
+            .storage
+            .list_messages("conversation-1")
+            .unwrap()
+            .is_empty());
+    }
+
+    fn install_approved_memory_task(
+        state: &AppState,
+        task_id: &str,
+        provider: Arc<dyn ChatProvider>,
+        backend: Arc<dyn MemoryBackend>,
+    ) -> (Arc<LiveTask>, PendingToolCall) {
+        state
+            .storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Cancellation race".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        state
+            .storage
+            .create_task(&TaskInput {
+                id: task_id.into(),
+                conversation_id: Some("conversation-1".into()),
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Cancellation race" }),
+            })
+            .unwrap();
+        state
+            .storage
+            .update_task_status(task_id, TaskStatus::Running, None, None)
+            .unwrap();
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend);
+        let proposal = tools
+            .propose(ToolRequest::RememberMemory {
+                text: "race-safe memory".into(),
+            })
+            .unwrap();
+        let pending = PendingToolCall {
+            provider_tool_call_id: "call-memory".into(),
+            proposal: proposal.clone(),
+        };
+        state
+            .storage
+            .create_proposed_action(&ProposedActionInput {
+                id: proposal.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: Some(task_id.into()),
+                tool_name: proposal.tool_name.clone(),
+                summary: proposal.summary.clone(),
+                request: serde_json::to_value(&proposal.request).unwrap(),
+            })
+            .unwrap();
+        state
+            .storage
+            .approve_action(
+                &proposal.action_id.to_string(),
+                Some("Approved once by user"),
+            )
+            .unwrap();
+        let runtime = Arc::new(AgentRuntime::new(provider, tools, AgentLimits::default()).unwrap());
+        let mut session =
+            AgentSession::new("local-model", vec![ChatMessage::user("remember it")]).unwrap();
+        session.pending_actions = vec![pending.clone()];
+        runtime
+            .resolve_action(
+                &session,
+                &proposal.approval_token,
+                crate::tools::ApprovalDecision::Approve,
+            )
+            .unwrap();
+        let live = Arc::new(LiveTask {
+            runtime,
+            session: tokio::sync::Mutex::new(session),
+            cancellation: CancellationToken::new(),
+            conversation_id: "conversation-1".into(),
+        });
+        state
+            .active_tasks
+            .lock()
+            .unwrap()
+            .insert(task_id.into(), live.clone());
+        state
+            .action_to_task
+            .lock()
+            .unwrap()
+            .insert(proposal.action_id.to_string(), task_id.into());
+        (live, pending)
+    }
+
+    async fn resume_pending_action(
+        state: Arc<AppState>,
+        live: Arc<LiveTask>,
+        pending: PendingToolCall,
+    ) -> Result<(), String> {
+        let mut session = live.session.lock().await;
+        let before_message_len = session.messages.len();
+        let run = live
+            .runtime
+            .run_until_blocked(&mut session, &live.cancellation)
+            .await;
+        record_tool_executions(
+            &state.storage,
+            std::slice::from_ref(&pending),
+            &session.messages[before_message_len.min(session.messages.len())..],
+        )?;
+        match run {
+            Err(error) if error.is_cancelled() => Ok(()),
+            other => Err(format!("expected cancellation, received {other:?}")),
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingCancellationMemory {
+        entered: (StdMutex<bool>, Condvar),
+    }
+
+    impl BlockingCancellationMemory {
+        fn wait_until_entered(&self) {
+            let (lock, condition) = &self.entered;
+            let mut entered = lock.lock().unwrap();
+            while !*entered {
+                let (next, timeout) = condition
+                    .wait_timeout(entered, Duration::from_secs(2))
+                    .unwrap();
+                entered = next;
+                assert!(
+                    !timeout.timed_out() || *entered,
+                    "memory tool did not start"
+                );
+            }
+        }
+    }
+
+    impl MemoryBackend for BlockingCancellationMemory {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            _text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            let (lock, condition) = &self.entered;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err(ToolError::Cancelled)
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            unreachable!("test only exercises remember")
+        }
+    }
+
+    struct ImmediateMemory;
+
+    impl MemoryBackend for ImmediateMemory {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            Ok(RememberedMemory {
+                id: "completed-before-provider".into(),
+                text: text.into(),
+                created_at_ms: 1,
+                original_bytes: 2048,
+                compressed_bytes: 161,
+                algorithm: "CrowQuant test".into(),
+            })
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            unreachable!("test only exercises remember")
+        }
+    }
+
+    struct UnusedProvider;
+
+    #[async_trait]
+    impl ChatProvider for UnusedProvider {
+        async fn complete(
+            &self,
+            _request: ChatCompletionRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ChatCompletion, ProviderError> {
+            panic!("execution cancellation must stop before another provider call")
+        }
+    }
+
+    #[derive(Default)]
+    struct CancellationProvider {
+        entered: Notify,
+    }
+
+    impl CancellationProvider {
+        async fn wait_until_entered(&self) {
+            self.entered.notified().await;
+        }
+    }
+
+    #[async_trait]
+    impl ChatProvider for CancellationProvider {
+        async fn complete(
+            &self,
+            _request: ChatCompletionRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ChatCompletion, ProviderError> {
+            self.entered.notify_one();
+            cancellation.cancelled().await;
+            Err(ProviderError::Cancelled)
+        }
+    }
 }

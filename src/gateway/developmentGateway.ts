@@ -446,7 +446,14 @@ export function createDevelopmentGateway(
           }
         : null;
       if (memory) memories = [memory, ...memories];
-      return clone({ conversation, summary: summaryFor(conversation), task, pendingActions: [], memory });
+      return clone({
+        conversation,
+        summary: summaryFor(conversation),
+        task,
+        pendingActions: [],
+        memory,
+        memories: memory ? [memory] : [],
+      });
     },
 
     async saveSettings(nextSettings: AppSettings): Promise<AppSettings> {

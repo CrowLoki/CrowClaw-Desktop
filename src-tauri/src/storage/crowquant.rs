@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::{
     now_ms, require_non_empty, CrowQuantMemory, CrowQuantMemoryInput, Storage, StorageResult,
@@ -50,6 +50,20 @@ impl Storage {
     pub fn list_crowquant_memories(&self) -> StorageResult<Vec<CrowQuantMemory>> {
         let connection = self.connection()?;
         list_crowquant_memories_from(&connection)
+    }
+
+    pub fn get_crowquant_memory(&self, id: &str) -> StorageResult<Option<CrowQuantMemory>> {
+        require_non_empty("memory id", id)?;
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT id, text, block, format_version, algorithm, dimension, seed, bits, original_bytes, created_at_ms
+                 FROM crowquant_memories WHERE id = ?1",
+                [id],
+                row_to_memory,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 }
 
