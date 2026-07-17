@@ -4,6 +4,34 @@ const host = process.env.CROWCLAW_TEST_HOST ?? "127.0.0.1";
 const port = Number(process.env.CROWCLAW_TEST_PORT ?? "32123");
 const model = "crowclaw-acceptance-model";
 
+const memoryScenarios = {
+  "MEMORY DENY": {
+    callId: "call-memory-deny",
+    name: "remember_memory",
+    arguments: { text: "This denied sentinel must never be stored" },
+  },
+  "MEMORY QUANTUM": {
+    callId: "call-memory-quantum",
+    name: "remember_memory",
+    arguments: { text: "Superconducting qubit calibration preserves phase coherence" },
+  },
+  "MEMORY GROCERY": {
+    callId: "call-memory-grocery",
+    name: "remember_memory",
+    arguments: { text: "Grocery list with apples bread and milk" },
+  },
+  "SEARCH DENY": {
+    callId: "call-search-deny",
+    name: "search_memory",
+    arguments: { query: "qubit calibration", limit: 2 },
+  },
+  "SEARCH QUANTUM": {
+    callId: "call-search-quantum",
+    name: "search_memory",
+    arguments: { query: "qubit calibration", limit: 2 },
+  },
+};
+
 function json(response, status, body) {
   const encoded = Buffer.from(JSON.stringify(body));
   response.writeHead(status, {
@@ -26,6 +54,18 @@ function completion(message, extra = {}) {
 
 function hasTool(request, name) {
   return Array.isArray(request.tools) && request.tools.some((tool) => tool?.function?.name === name);
+}
+
+function toolCall(callId, name, arguments_) {
+  return completion({
+    role: "assistant",
+    content: null,
+    tool_calls: [{
+      id: callId,
+      type: "function",
+      function: { name, arguments: JSON.stringify(arguments_) },
+    }],
+  }, { finish_reason: "tool_calls" });
 }
 
 const server = http.createServer((request, response) => {
@@ -67,10 +107,41 @@ const server = http.createServer((request, response) => {
         result = {};
       }
       if (result.state === "denied") {
+        if (latest.name === "remember_memory") {
+          json(response, 200, completion({
+            role: "assistant",
+            content: "You denied storing that CrowQuant memory. Nothing was stored.",
+          }));
+          return;
+        }
+        if (latest.name === "search_memory") {
+          json(response, 200, completion({
+            role: "assistant",
+            content: "You denied searching CrowQuant memory. No stored memory was read.",
+          }));
+          return;
+        }
         json(response, 200, completion({
           role: "assistant",
           content: "You denied the local action. Nothing was read or run.",
         }));
+        return;
+      }
+      if (result.output?.type === "memory_remembered") {
+        const memory = result.output.memory ?? {};
+        json(response, 200, completion({
+          role: "assistant",
+          content: `CrowQuant stored memory ${memory.id}: ${JSON.stringify(memory.text)} (${memory.originalBytes} original bytes to ${memory.compressedBytes} compressed bytes using ${memory.algorithm}).`,
+        }));
+        return;
+      }
+      if (result.output?.type === "memory_search") {
+        const results = Array.isArray(result.output.results) ? result.output.results : [];
+        const top = results[0];
+        const content = top
+          ? `CrowQuant search ${JSON.stringify(result.output.query)} returned ${results.length} result(s). Top result ${top.id}: ${JSON.stringify(top.text)} with score ${top.score}.`
+          : `CrowQuant search ${JSON.stringify(result.output.query)} returned 0 results.`;
+        json(response, 200, completion({ role: "assistant", content }));
         return;
       }
       if (result.output?.type === "directory_listing" && hasTool(body, "read_text_file")) {
@@ -100,6 +171,22 @@ const server = http.createServer((request, response) => {
     }
 
     const content = String(latest.content ?? "");
+    const memoryScenario = memoryScenarios[content.trim().toUpperCase()];
+    if (memoryScenario) {
+      if (!hasTool(body, memoryScenario.name)) {
+        json(response, 200, completion({
+          role: "assistant",
+          content: `Acceptance failure: ${memoryScenario.name} was not advertised by CrowClaw.`,
+        }));
+        return;
+      }
+      json(response, 200, toolCall(
+        memoryScenario.callId,
+        memoryScenario.name,
+        memoryScenario.arguments,
+      ));
+      return;
+    }
     if (/which file did i approve|what was it about/i.test(content)) {
       const history = JSON.stringify(messages);
       const file = history.match(/([^"\\/]+\.txt)/i)?.[1] ?? "the approved text file";
