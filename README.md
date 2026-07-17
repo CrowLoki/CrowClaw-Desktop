@@ -12,9 +12,9 @@ The Alpha 1 baseline provides:
 - clean Windows installation and uninstallation;
 - a fresh-checkout build and end-to-end acceptance test.
 
-## Alpha 2 scope
+## Current public Alpha
 
-Alpha 2 is scoped to add a real, local CrowQuant-compatible memory path while preserving the Alpha 1 desktop-agent baseline. Its release remains pending until the packaged-installer acceptance evidence is recorded.
+[CrowClaw v0.1.0-alpha.2](https://github.com/CrowLoki/CrowClaw-Desktop/releases/tag/v0.1.0-alpha.2) is the current published public prerelease. It adds a real, local CrowQuant-compatible memory path while preserving the Alpha 1 desktop-agent baseline.
 
 - remember user-entered text from CrowClaw's Memory surface;
 - compress deterministic local vectors into durable CrowQuant-compatible blocks;
@@ -22,7 +22,18 @@ Alpha 2 is scoped to add a real, local CrowQuant-compatible memory path while pr
 - retain the stored text, compressed vector data, and retrieval behavior after CrowClaw is closed and reopened;
 - require no Python installation, paid service, remote account, or separate repository at runtime.
 
-The exact Alpha 2 release evidence and known limitations belong in [`docs/release-notes/v0.1.0-alpha.2.md`](docs/release-notes/v0.1.0-alpha.2.md). Until those pending fields are replaced, the Alpha 2 installer has not been declared accepted or published.
+The exact Alpha 2 release evidence and known limitations are recorded in [`docs/release-notes/v0.1.0-alpha.2.md`](docs/release-notes/v0.1.0-alpha.2.md). The published Windows installer has SHA-256 `4193872c1b6169f53c322906504f09a999c8a456f3e35ef5e26e5c1e020e8f9e`.
+
+## Alpha 3 scope
+
+Alpha 3 is being prepared as the next public prerelease. Its intended scope is deliberately bounded:
+
+- let the conversational agent propose CrowQuant remember and search actions through the existing native approval gate;
+- make denial non-mutating and keep approved CrowQuant results visible to the connected model;
+- preserve stored CrowQuant memories and ranked recall across a full application restart;
+- apply CrowClaw's supplied crow branding and a black, violet, purple, and magenta desktop theme while preserving the working desktop flows.
+
+The CrowQuant chat-tool integration has a recorded pre-release installed-app acceptance receipt. The final Alpha 3 installer has **not** yet been declared accepted or published: the approval-gated tools and violet branding still require final integration, a clean Alpha 3 build, and packaged verification together. See [`docs/release-notes/v0.1.0-alpha.3.md`](docs/release-notes/v0.1.0-alpha.3.md).
 
 This repository is intentionally independent. It does not modify or repurpose the existing SRH-HQRE, Orion, CrowMemory, CrowNest, CrowQuant, or previous CrowClaw repositories.
 
