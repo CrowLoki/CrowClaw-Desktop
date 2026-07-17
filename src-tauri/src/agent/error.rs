@@ -57,6 +57,17 @@ pub enum AgentError {
     Serialization { message: String },
 }
 
+impl AgentError {
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled
+                | Self::Provider(ProviderError::Cancelled)
+                | Self::Tool(ToolError::Cancelled)
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct StructuredError {
     pub code: String,
@@ -143,5 +154,22 @@ impl From<&AgentError> for StructuredError {
                 details: Value::Null,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentError, ProviderError};
+    use crate::tools::ToolError;
+
+    #[test]
+    fn cancellation_classifier_covers_runtime_provider_and_tool_boundaries() {
+        assert!(AgentError::Cancelled.is_cancelled());
+        assert!(AgentError::Provider(ProviderError::Cancelled).is_cancelled());
+        assert!(AgentError::Tool(ToolError::Cancelled).is_cancelled());
+        assert!(!AgentError::InvalidSession {
+            message: "not cancellation".into()
+        }
+        .is_cancelled());
     }
 }

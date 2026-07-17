@@ -1,5 +1,6 @@
 import { Check, Copy, LoaderCircle, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
+import crowClawMark from "../assets/branding/crowclaw-mark.webp";
 import type { ConversationMessage } from "../gateway/contracts";
 
 type MessageBubbleProps = {
@@ -23,7 +24,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   return (
     <article className={assistant ? "message message--assistant" : "message message--user"}>
       <div className="message__avatar" aria-hidden="true">
-        {assistant ? <span className="crow-avatar">C</span> : <span className="user-avatar">You</span>}
+        {assistant ? (
+          <span className="crow-avatar"><img src={crowClawMark} alt="" /></span>
+        ) : (
+          <span className="user-avatar">You</span>
+        )}
       </div>
       <div className="message__body">
         <div className="message__meta">

@@ -219,7 +219,7 @@ export function MemoryView({
         ) : visibleCrowQuantMemories.length === 0 ? (
           <div className="crowquant-empty">
             <Database size={22} />
-            <p>{recallResults === null ? "Nothing has been stored with CrowQuant yet." : "No CrowQuant memory matched that query."}</p>
+            <p>{recallResults === null ? "Nothing has been stored with CrowQuant yet." : "No CrowQuant memories are available to rank."}</p>
           </div>
         ) : (
           <div className="crowquant-grid">
@@ -229,7 +229,7 @@ export function MemoryView({
                 <article className="crowquant-card" key={memory.id}>
                   <div className="crowquant-card__topline">
                     <span><Database size={14} /> {memory.algorithm}</span>
-                    {score !== undefined && <strong>{Math.round(score * 100)}% match</strong>}
+                    {score !== undefined && <strong>{Math.round(score * 100)}% lexical similarity</strong>}
                   </div>
                   <p>{memory.text}</p>
                   <dl>

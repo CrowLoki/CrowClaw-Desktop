@@ -1,5 +1,6 @@
 import { Check, LoaderCircle, LockKeyhole, MonitorCog, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
+import crowClawHero from "../assets/branding/crowclaw-hero.webp";
 import type {
   ConnectionTestResult,
   DiscoveredEndpoint,
@@ -45,6 +46,12 @@ export function Onboarding({ discoverEndpoints, testConnection, connect }: Onboa
       <section className="onboarding-intro" aria-labelledby="onboarding-title">
         <BrandMark />
         <div className="onboarding-intro__copy">
+          <img
+            className="onboarding-intro__artwork"
+            src={crowClawHero}
+            alt=""
+            aria-hidden="true"
+          />
           <span className="eyebrow"><Sparkles size={14} /> First run</span>
           <h1 id="onboarding-title">Your local agent,<br />ready to work.</h1>
           <p>
@@ -59,6 +66,7 @@ export function Onboarding({ discoverEndpoints, testConnection, connect }: Onboa
       </section>
 
       <section className="onboarding-panel" aria-labelledby="connection-title">
+        <div className="onboarding-panel__brand"><BrandMark /></div>
         <div className="panel-heading">
           <div>
             <span className="step-label">Step 1 of 1</span>

@@ -1,4 +1,4 @@
-use std::{mem, sync::Arc};
+use std::{collections::HashSet, mem, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -225,6 +225,22 @@ impl AgentRuntime {
                 });
             }
 
+            let mut provider_call_ids = HashSet::with_capacity(tool_calls.len());
+            for call in &tool_calls {
+                if call.id.trim().is_empty() {
+                    return Err(AgentError::InvalidToolCall {
+                        tool_name: call.name.clone(),
+                        message: "provider tool-call ID cannot be empty".into(),
+                    });
+                }
+                if !provider_call_ids.insert(call.id.clone()) {
+                    return Err(AgentError::InvalidToolCall {
+                        tool_name: call.name.clone(),
+                        message: format!("provider returned duplicate tool-call ID {:?}", call.id),
+                    });
+                }
+            }
+
             // Parse every call before recording any proposal so malformed batches are atomic.
             let requests = tool_calls
                 .iter()
@@ -334,7 +350,10 @@ mod tests {
     use std::{
         collections::VecDeque,
         fs,
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
     };
 
     use async_trait::async_trait;
@@ -347,7 +366,10 @@ mod tests {
             AssistantToolCall, CancellationToken, ChatCompletion, ChatCompletionRequest,
             ChatMessage, ChatProvider, ProviderError,
         },
-        tools::{ApprovalDecision, ToolExecutor, ToolPolicy},
+        tools::{
+            ApprovalDecision, MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError,
+            ToolExecutor, ToolPolicy,
+        },
     };
 
     #[tokio::test]
@@ -452,9 +474,211 @@ mod tests {
         assert!(provider.requests().is_empty());
     }
 
+    #[tokio::test]
+    async fn two_memory_calls_wait_for_both_approvals_and_keep_results_bound_to_call_ids() {
+        let first = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![
+                    AssistantToolCall {
+                        id: "call-remember".into(),
+                        name: "remember_memory".into(),
+                        arguments: json!({ "text": "qubit calibration" }),
+                    },
+                    AssistantToolCall {
+                        id: "call-search".into(),
+                        name: "search_memory".into(),
+                        arguments: json!({ "query": "qubit", "limit": 3 }),
+                    },
+                ],
+            ),
+            finish_reason: Some("tool_calls".into()),
+            usage: None,
+        };
+        let second = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant("Memory actions completed."),
+            finish_reason: Some("stop".into()),
+            usage: None,
+        };
+        let provider = Arc::new(FakeProvider::new([first, second]));
+        let memory = Arc::new(RuntimeMemoryBackend::default());
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(memory.clone());
+        let runtime = AgentRuntime::new(provider.clone(), tools, AgentLimits::default()).unwrap();
+        let mut session = AgentSession::new(
+            "local-model",
+            vec![ChatMessage::user("remember then find it")],
+        )
+        .unwrap();
+
+        let waiting = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap();
+        let actions = match waiting {
+            AgentRunOutcome::AwaitingApproval { actions, .. } => actions,
+            other => panic!("expected approval boundary, got {other:?}"),
+        };
+        assert_eq!(actions.len(), 2);
+        assert_eq!(memory.remember_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(memory.search_calls.load(Ordering::SeqCst), 0);
+
+        runtime
+            .resolve_action(
+                &session,
+                &actions[0].approval_token,
+                ApprovalDecision::Approve,
+            )
+            .unwrap();
+        let still_waiting = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(
+            still_waiting,
+            AgentRunOutcome::AwaitingApproval { .. }
+        ));
+        assert_eq!(memory.remember_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(memory.search_calls.load(Ordering::SeqCst), 0);
+
+        runtime
+            .resolve_action(
+                &session,
+                &actions[1].approval_token,
+                ApprovalDecision::Approve,
+            )
+            .unwrap();
+        let completed = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(completed, AgentRunOutcome::Completed { .. }));
+        assert_eq!(memory.remember_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(memory.search_calls.load(Ordering::SeqCst), 1);
+
+        let requests = provider.requests();
+        let remember_output = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("call-remember"))
+            .and_then(|message| message.content.as_deref())
+            .expect("remember output should be supplied to the model");
+        assert!(remember_output.contains("memory_remembered"));
+        assert!(remember_output.contains("memory-remember"));
+        let search_output = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("call-search"))
+            .and_then(|message| message.content.as_deref())
+            .expect("search output should be supplied to the model");
+        assert!(search_output.contains("memory_search"));
+        assert!(search_output.contains("search-result"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_provider_tool_call_ids_are_rejected_before_proposal_or_memory_access() {
+        let completion = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![
+                    AssistantToolCall {
+                        id: "duplicate-call".into(),
+                        name: "remember_memory".into(),
+                        arguments: json!({ "text": "first" }),
+                    },
+                    AssistantToolCall {
+                        id: "duplicate-call".into(),
+                        name: "search_memory".into(),
+                        arguments: json!({ "query": "first" }),
+                    },
+                ],
+            ),
+            finish_reason: Some("tool_calls".into()),
+            usage: None,
+        };
+        let provider = Arc::new(FakeProvider::new([completion]));
+        let memory = Arc::new(RuntimeMemoryBackend::default());
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(memory.clone());
+        let runtime = AgentRuntime::new(provider, tools, AgentLimits::default()).unwrap();
+        let mut session = AgentSession::new(
+            "local-model",
+            vec![ChatMessage::user("make two memory calls")],
+        )
+        .unwrap();
+
+        let error = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::agent::AgentError::InvalidToolCall { message, .. }
+                if message.contains("duplicate tool-call ID")
+        ));
+        assert!(session.pending_actions.is_empty());
+        assert_eq!(session.tool_calls, 0);
+        assert_eq!(memory.remember_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(memory.search_calls.load(Ordering::SeqCst), 0);
+    }
+
     struct FakeProvider {
         responses: Mutex<VecDeque<ChatCompletion>>,
         requests: Mutex<Vec<ChatCompletionRequest>>,
+    }
+
+    #[derive(Default)]
+    struct RuntimeMemoryBackend {
+        remember_calls: AtomicUsize,
+        search_calls: AtomicUsize,
+    }
+
+    impl MemoryBackend for RuntimeMemoryBackend {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            self.remember_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(RememberedMemory {
+                id: "memory-remember".into(),
+                text: text.into(),
+                created_at_ms: 1,
+                original_bytes: 2048,
+                compressed_bytes: 161,
+                algorithm: "CrowQuant test".into(),
+            })
+        }
+
+        fn search(
+            &self,
+            query: &str,
+            _limit: usize,
+            cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            self.search_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![MemorySearchMatch {
+                id: "search-result".into(),
+                text: format!("stored {query} memory"),
+                created_at_ms: 1,
+                score: 0.75,
+            }])
+        }
     }
 
     impl FakeProvider {

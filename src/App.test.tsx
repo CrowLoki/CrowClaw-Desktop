@@ -1,10 +1,38 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { App } from "./App";
+import { App, mergeMemoryRecords } from "./App";
 import { createDevelopmentGateway } from "./gateway/developmentGateway";
+import type { MemoryRecord } from "./gateway/contracts";
+
+function memory(id: string, preview: string): MemoryRecord {
+  return {
+    id,
+    title: id,
+    preview,
+    source: "approved-action",
+    conversationId: "conversation-1",
+    createdAt: "2026-07-17T00:00:00.000Z",
+    tags: ["approved"],
+  };
+}
 
 describe("CrowClaw desktop shell", () => {
+  it("merges every batched action memory without duplicates or losing unrelated records", () => {
+    const merged = mergeMemoryRecords(
+      [memory("batch-a", "old"), memory("unrelated", "keep me")],
+      [
+        memory("batch-a", "new"),
+        memory("batch-b", "second action"),
+        memory("batch-a", "duplicate returned record"),
+      ],
+    );
+
+    expect(merged.map(({ id }) => id)).toEqual(["batch-a", "batch-b", "unrelated"]);
+    expect(merged[0]?.preview).toBe("new");
+    expect(merged[2]?.preview).toBe("keep me");
+  });
+
   it("completes first-run local model onboarding", async () => {
     const user = userEvent.setup();
     render(<App gateway={createDevelopmentGateway({ firstRun: true, delayMs: 0 })} />);
@@ -96,7 +124,7 @@ describe("CrowClaw desktop shell", () => {
     await user.click(screen.getByRole("button", { name: /recall memory/i }));
 
     expect(await screen.findByRole("heading", { name: /recall results/i })).toBeVisible();
-    expect(screen.getByText(/% match/i)).toBeVisible();
+    expect(screen.getByText(/% lexical similarity/i)).toBeVisible();
     expect(screen.getByText("The quantum lab uses local simulation evidence.")).toBeVisible();
   });
 });

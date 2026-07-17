@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import crowClawHead from "../assets/branding/crowclaw-head.webp";
 import type {
   AgentTask,
   Conversation,
@@ -105,7 +106,12 @@ export function ChatWorkspace({
           conversation.messages.map((message) => <MessageBubble message={message} key={message.id} />)}
         {!loading && conversation && conversation.messages.length === 0 && (
           <section className="new-conversation" aria-labelledby="new-conversation-title">
-            <span className="new-conversation__icon"><MessageCircle size={28} /></span>
+            <img
+              className="new-conversation__emblem"
+              src={crowClawHead}
+              alt=""
+              aria-hidden="true"
+            />
             <h2 id="new-conversation-title">What are we working on?</h2>
             <p>CrowClaw can talk things through, complete tasks, and request local actions with your approval.</p>
             <div className="starter-prompts">
