@@ -230,6 +230,167 @@ fn failed_mutations_roll_back_without_corrupting_order_or_approval() -> StorageR
 }
 
 #[test]
+fn cancellation_request_wins_atomic_task_terminal_arbitration() -> StorageResult<()> {
+    let directory = TempDir::new()?;
+    let storage = Storage::open(directory.path())?;
+    storage.create_conversation(&ConversationInput {
+        id: "conversation-race".into(),
+        title: "Cancellation race".into(),
+        provider_profile_id: None,
+    })?;
+    storage.create_task(&TaskInput {
+        id: "task-cancel-first".into(),
+        conversation_id: Some("conversation-race".into()),
+        kind: "race".into(),
+        payload: Value::Null,
+    })?;
+    storage.update_task_status("task-cancel-first", TaskStatus::Running, None, None)?;
+    storage.request_task_cancellation("task-cancel-first")?;
+
+    assert!(storage
+        .update_task_status(
+            "task-cancel-first",
+            TaskStatus::Succeeded,
+            Some(&json!({ "late": true })),
+            None,
+        )
+        .is_err());
+    assert!(storage
+        .update_task_status(
+            "task-cancel-first",
+            TaskStatus::Failed,
+            None,
+            Some("late failure"),
+        )
+        .is_err());
+    assert_eq!(
+        storage
+            .get_task("task-cancel-first")?
+            .expect("task should remain running until the cancellation owner finishes")
+            .status,
+        TaskStatus::Running
+    );
+    let cancellation_message = MessageInput {
+        id: "message-cancelled".into(),
+        conversation_id: "conversation-race".into(),
+        role: MessageRole::Assistant,
+        content: "Task cancelled.".into(),
+        metadata: json!({ "taskId": "task-cancel-first" }),
+    };
+    let (cancelled, transitioned) = storage.finish_task(
+        "task-cancel-first",
+        TaskStatus::Cancelled,
+        None,
+        None,
+        Some(&cancellation_message),
+    )?;
+    assert!(transitioned);
+    assert_eq!(cancelled.status, TaskStatus::Cancelled);
+    let (_, transitioned_again) = storage.finish_task(
+        "task-cancel-first",
+        TaskStatus::Cancelled,
+        None,
+        None,
+        Some(&MessageInput {
+            id: "message-must-not-be-inserted".into(),
+            ..cancellation_message.clone()
+        }),
+    )?;
+    assert!(!transitioned_again);
+    assert_eq!(storage.list_messages("conversation-race")?.len(), 1);
+
+    storage.create_task(&TaskInput {
+        id: "task-completion-first".into(),
+        conversation_id: None,
+        kind: "race".into(),
+        payload: Value::Null,
+    })?;
+    storage.update_task_status("task-completion-first", TaskStatus::Running, None, None)?;
+    storage.update_task_status(
+        "task-completion-first",
+        TaskStatus::Succeeded,
+        Some(&json!({ "finished": true })),
+        None,
+    )?;
+    assert!(storage
+        .request_task_cancellation("task-completion-first")
+        .is_err());
+    assert_eq!(
+        storage
+            .get_task("task-completion-first")?
+            .expect("completed task should remain completed")
+            .status,
+        TaskStatus::Succeeded
+    );
+    Ok(())
+}
+
+#[test]
+fn terminal_task_and_assistant_message_commit_or_roll_back_together() -> StorageResult<()> {
+    let directory = TempDir::new()?;
+    let storage = Storage::open(directory.path())?;
+    storage.create_conversation(&ConversationInput {
+        id: "conversation-terminal".into(),
+        title: "Atomic terminal result".into(),
+        provider_profile_id: None,
+    })?;
+    storage.append_message(&MessageInput {
+        id: "duplicate-message".into(),
+        conversation_id: "conversation-terminal".into(),
+        role: MessageRole::User,
+        content: "existing".into(),
+        metadata: Value::Null,
+    })?;
+    storage.create_task(&TaskInput {
+        id: "task-terminal".into(),
+        conversation_id: Some("conversation-terminal".into()),
+        kind: "race".into(),
+        payload: Value::Null,
+    })?;
+    storage.update_task_status("task-terminal", TaskStatus::Running, None, None)?;
+
+    let duplicate = MessageInput {
+        id: "duplicate-message".into(),
+        conversation_id: "conversation-terminal".into(),
+        role: MessageRole::Assistant,
+        content: "must roll back".into(),
+        metadata: json!({ "taskId": "task-terminal" }),
+    };
+    assert!(storage
+        .finish_task(
+            "task-terminal",
+            TaskStatus::Succeeded,
+            Some(&json!({ "finished": true })),
+            None,
+            Some(&duplicate),
+        )
+        .is_err());
+    assert_eq!(
+        storage
+            .get_task("task-terminal")?
+            .expect("failed message insert must roll back task completion")
+            .status,
+        TaskStatus::Running
+    );
+    assert_eq!(storage.list_messages("conversation-terminal")?.len(), 1);
+
+    let (completed, transitioned) = storage.finish_task(
+        "task-terminal",
+        TaskStatus::Succeeded,
+        Some(&json!({ "finished": true })),
+        None,
+        Some(&MessageInput {
+            id: "terminal-message".into(),
+            ..duplicate
+        }),
+    )?;
+    assert!(transitioned);
+    assert_eq!(completed.status, TaskStatus::Succeeded);
+    assert_eq!(storage.list_messages("conversation-terminal")?.len(), 2);
+    Ok(())
+}
+
+#[test]
 fn retention_choice_preserves_or_removes_user_records_explicitly() -> StorageResult<()> {
     let directory = TempDir::new()?;
     let storage = Storage::open(directory.path())?;

@@ -68,12 +68,21 @@ impl AppState {
                 task.status,
                 StoredTaskStatus::Queued | StoredTaskStatus::Running
             ) {
-                let _ = storage.update_task_status(
-                    &task.id,
-                    StoredTaskStatus::Failed,
-                    None,
-                    Some("Interrupted by application restart"),
-                );
+                if task.cancellation_requested {
+                    let _ = storage.update_task_status(
+                        &task.id,
+                        StoredTaskStatus::Cancelled,
+                        None,
+                        None,
+                    );
+                } else {
+                    let _ = storage.update_task_status(
+                        &task.id,
+                        StoredTaskStatus::Failed,
+                        None,
+                        Some("Interrupted by application restart"),
+                    );
+                }
             }
         }
 
@@ -135,6 +144,149 @@ fn interrupt_unexecuted_action(
         }
     }
     Ok(())
+}
+
+enum TaskSettlement {
+    Settled(Box<StoredTask>),
+    CancellationPending,
+}
+
+fn settle_task_with_message(
+    storage: &Storage,
+    task_id: &str,
+    status: StoredTaskStatus,
+    result: Option<&Value>,
+    error: Option<&str>,
+    message: Option<&MessageInput>,
+) -> Result<TaskSettlement, String> {
+    match storage.finish_task(task_id, status, result, error, message) {
+        Ok((task, _)) => Ok(TaskSettlement::Settled(Box::new(task))),
+        Err(settlement_error) => {
+            let current = storage
+                .get_task(task_id)
+                .map_err(display_error)?
+                .ok_or_else(|| "Task was not found".to_string())?;
+            if matches!(&settlement_error, StorageError::Conflict(_))
+                && (current.cancellation_requested || current.status == StoredTaskStatus::Cancelled)
+            {
+                Ok(TaskSettlement::CancellationPending)
+            } else {
+                Err(display_error(settlement_error))
+            }
+        }
+    }
+}
+
+fn task_cancellation_requested(storage: &Storage, task_id: &str) -> Result<bool, String> {
+    storage
+        .get_task(task_id)
+        .map_err(display_error)?
+        .map(|task| task.cancellation_requested || task.status == StoredTaskStatus::Cancelled)
+        .ok_or_else(|| "Task was not found".to_string())
+}
+
+struct TaskCancellationCoreResult {
+    task: StoredTask,
+    conversation_id: Option<String>,
+    newly_cancelled: bool,
+}
+
+async fn cancel_task_core(
+    state: &AppState,
+    task_id: &str,
+) -> Result<TaskCancellationCoreResult, String> {
+    let task = state
+        .storage
+        .get_task(task_id)
+        .map_err(display_error)?
+        .ok_or_else(|| "Task was not found".to_string())?;
+    if let Err(error) = state.storage.request_task_cancellation(task_id) {
+        let current = state
+            .storage
+            .get_task(task_id)
+            .map_err(display_error)?
+            .ok_or_else(|| "Task was not found".to_string())?;
+        if matches!(&error, StorageError::Conflict(_)) && current.status.is_terminal() {
+            let completing_live = state
+                .active_tasks
+                .lock()
+                .map_err(|_| "Active-task lock was poisoned".to_string())?
+                .get(task_id)
+                .cloned();
+            if let Some(live) = completing_live {
+                let _completed_session = live.session.lock().await;
+            }
+            let current = state
+                .storage
+                .get_task(task_id)
+                .map_err(display_error)?
+                .ok_or_else(|| "Task was not found".to_string())?;
+            return Ok(TaskCancellationCoreResult {
+                conversation_id: current.conversation_id.clone(),
+                task: current,
+                newly_cancelled: false,
+            });
+        }
+        return Err(display_error(error));
+    }
+
+    let live = state
+        .active_tasks
+        .lock()
+        .map_err(|_| "Active-task lock was poisoned".to_string())?
+        .get(task_id)
+        .cloned();
+    let conversation_id = task
+        .conversation_id
+        .clone()
+        .or_else(|| live.as_ref().map(|item| item.conversation_id.clone()));
+    if let Some(live) = &live {
+        live.cancellation.cancel();
+        let session = live.session.lock().await;
+        for pending in &session.pending_actions {
+            let action_id = pending.proposal.action_id.to_string();
+            let stored = state
+                .storage
+                .get_proposed_action(&action_id)
+                .map_err(display_error)?;
+            if stored.as_ref().map(|action| action.status) == Some(StoredActionStatus::Pending) {
+                live.runtime
+                    .resolve_action(
+                        &session,
+                        &pending.proposal.approval_token,
+                        ApprovalDecision::Deny {
+                            reason: Some("Task cancelled by user".into()),
+                        },
+                    )
+                    .map_err(display_error)?;
+            }
+            interrupt_unexecuted_action(&state.storage, &action_id, "Task cancelled by user")
+                .map_err(display_error)?;
+        }
+    }
+    let cancellation_message = conversation_id.as_ref().map(|conversation_id| MessageInput {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.clone(),
+        role: StoredMessageRole::Assistant,
+        content: "Task cancelled. Completed approved actions remain recorded; every unexecuted action was closed.".into(),
+        metadata: json!({ "taskId": task_id }),
+    });
+    let (cancelled, transitioned) = state
+        .storage
+        .finish_task(
+            task_id,
+            StoredTaskStatus::Cancelled,
+            None,
+            None,
+            cancellation_message.as_ref(),
+        )
+        .map_err(display_error)?;
+    remove_live_task(state, task_id)?;
+    Ok(TaskCancellationCoreResult {
+        conversation_id,
+        task: cancelled,
+        newly_cancelled: transitioned,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -790,58 +942,71 @@ pub async fn crowclaw_chat_send(
         .insert(task_id.clone(), live.clone());
     emit_task(&app, &state.storage, &running)?;
 
-    let outcome = {
-        let mut session = live.session.lock().await;
-        live.runtime
-            .run_until_blocked(&mut session, &live.cancellation)
-            .await
-    };
+    let mut session = live.session.lock().await;
+    let outcome = live
+        .runtime
+        .run_until_blocked(&mut session, &live.cancellation)
+        .await;
     let pending_actions = match outcome {
         Ok(AgentRunOutcome::Completed { message, .. }) => {
-            persist_assistant_message(&state.storage, &conversation.id, &task_id, &message)?;
-            let completed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Succeeded,
-                    Some(&json!({ "message": message.content })),
-                    None,
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &completed)?;
-            Vec::new()
-        }
-        Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
-            let views = persist_runtime_actions(&state, &conversation.id, &task_id, &actions)?;
-            let current = state
-                .storage
-                .get_task(&task_id)
-                .map_err(display_error)?
-                .ok_or_else(|| "Task was not found".to_string())?;
-            emit_task(&app, &state.storage, &current)?;
-            views
-        }
-        Err(error) => {
-            if matches!(error, crate::agent::AgentError::Cancelled) {
-                remove_live_task(&state, &task_id)?;
-                Vec::new()
-            } else {
-                let failed = state
-                    .storage
-                    .update_task_status(
-                        &task_id,
-                        StoredTaskStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                    )
-                    .map_err(display_error)?;
-                remove_live_task(&state, &task_id)?;
-                emit_task(&app, &state.storage, &failed)?;
-                return Err(error.to_string());
+            let result = json!({ "message": message.content });
+            let terminal_message = assistant_message_input(
+                &conversation.id,
+                &task_id,
+                message
+                    .content
+                    .as_deref()
+                    .unwrap_or("CrowClaw completed the task without a text response."),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Succeeded,
+                Some(&result),
+                None,
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(completed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &completed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
             }
         }
+        Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
+            if task_cancellation_requested(&state.storage, &task_id)? {
+                Vec::new()
+            } else {
+                let views = persist_runtime_actions(&state, &conversation.id, &task_id, &actions)?;
+                let current = state
+                    .storage
+                    .get_task(&task_id)
+                    .map_err(display_error)?
+                    .ok_or_else(|| "Task was not found".to_string())?;
+                emit_task(&app, &state.storage, &current)?;
+                views
+            }
+        }
+        Err(error) if error.is_cancelled() => Vec::new(),
+        Err(error) => match settle_task_with_message(
+            &state.storage,
+            &task_id,
+            StoredTaskStatus::Failed,
+            None,
+            Some(&error.to_string()),
+            None,
+        )? {
+            TaskSettlement::Settled(failed) => {
+                remove_live_task(&state, &task_id)?;
+                emit_task(&app, &state.storage, &failed)?;
+                drop(session);
+                return Err(error.to_string());
+            }
+            TaskSettlement::CancellationPending => Vec::new(),
+        },
     };
+    drop(session);
     chat_result(&state.storage, &conversation.id, &task_id, pending_actions).map_err(display_error)
 }
 
@@ -851,77 +1016,19 @@ pub async fn crowclaw_task_cancel(
     state: State<'_, AppState>,
     request: TaskRequest,
 ) -> Result<TaskCancellationResult, String> {
-    let live = state
-        .active_tasks
-        .lock()
-        .map_err(|_| "Active-task lock was poisoned".to_string())?
-        .get(&request.task_id)
-        .cloned();
-    if let Some(live) = &live {
-        live.cancellation.cancel();
+    let core = cancel_task_core(&state, &request.task_id).await?;
+    if core.newly_cancelled {
+        emit_task(&app, &state.storage, &core.task)?;
     }
-    let task = state
-        .storage
-        .get_task(&request.task_id)
-        .map_err(display_error)?
-        .ok_or_else(|| "Task was not found".to_string())?;
-    state
-        .storage
-        .request_task_cancellation(&task.id)
-        .map_err(display_error)?;
-
-    if let Some(live) = &live {
-        let session = live.session.lock().await;
-        for pending in &session.pending_actions {
-            let action_id = pending.proposal.action_id.to_string();
-            let stored = state
-                .storage
-                .get_proposed_action(&action_id)
-                .map_err(display_error)?;
-            if stored.as_ref().map(|action| action.status) == Some(StoredActionStatus::Pending) {
-                live.runtime
-                    .resolve_action(
-                        &session,
-                        &pending.proposal.approval_token,
-                        ApprovalDecision::Deny {
-                            reason: Some("Task cancelled by user".into()),
-                        },
-                    )
-                    .map_err(display_error)?;
-            }
-            interrupt_unexecuted_action(&state.storage, &action_id, "Task cancelled by user")
-                .map_err(display_error)?;
-        }
-    }
-    let cancelled = state
-        .storage
-        .update_task_status(&task.id, StoredTaskStatus::Cancelled, None, None)
-        .map_err(display_error)?;
-    remove_live_task(&state, &task.id)?;
-    let conversation_id = task
+    let conversation = core
         .conversation_id
-        .or_else(|| live.as_ref().map(|item| item.conversation_id.clone()));
-    if let Some(conversation_id) = &conversation_id {
-        state
-            .storage
-            .append_message(&MessageInput {
-                id: Uuid::new_v4().to_string(),
-                conversation_id: conversation_id.clone(),
-                role: StoredMessageRole::Assistant,
-                content: "Task cancelled. Completed approved actions remain recorded; every unexecuted action was closed.".into(),
-                metadata: json!({ "taskId": task.id }),
-            })
-            .map_err(display_error)?;
-    }
-    emit_task(&app, &state.storage, &cancelled)?;
-    let conversation = conversation_id
         .as_deref()
         .map(|id| conversation_view(&state.storage, id))
         .transpose()
         .map_err(display_error)?;
     let summary = conversation.as_ref().map(summary_for);
     Ok(TaskCancellationResult {
-        task: task_view(&state.storage, &cancelled).map_err(display_error)?,
+        task: task_view(&state.storage, &core.task).map_err(display_error)?,
         conversation,
         summary,
     })
@@ -1005,7 +1112,6 @@ pub async fn crowclaw_action_decide(
         .find(|(action_id, _)| action_id == &request.action_id)
         .or_else(|| recorded.first())
         .map(|(_, memory)| memory.clone());
-    drop(session);
     state
         .action_to_task
         .lock()
@@ -1014,56 +1120,71 @@ pub async fn crowclaw_action_decide(
 
     let pending_actions = match run {
         Ok(AgentRunOutcome::Completed { message, .. }) => {
-            persist_assistant_message(&state.storage, &live.conversation_id, &task_id, &message)?;
-            let completed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Succeeded,
-                    Some(&json!({ "message": message.content })),
-                    None,
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &completed)?;
-            Vec::new()
+            let result = json!({ "message": message.content });
+            let terminal_message = assistant_message_input(
+                &live.conversation_id,
+                &task_id,
+                message
+                    .content
+                    .as_deref()
+                    .unwrap_or("CrowClaw completed the task without a text response."),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Succeeded,
+                Some(&result),
+                None,
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(completed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &completed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
+            }
         }
         Ok(AgentRunOutcome::AwaitingApproval { actions, .. }) => {
-            let pending =
-                persist_runtime_actions(&state, &live.conversation_id, &task_id, &actions)?;
-            let current = state
-                .storage
-                .get_task(&task_id)
-                .map_err(display_error)?
-                .ok_or_else(|| "Task was not found".to_string())?;
-            emit_task(&app, &state.storage, &current)?;
-            pending
+            if task_cancellation_requested(&state.storage, &task_id)? {
+                Vec::new()
+            } else {
+                let pending =
+                    persist_runtime_actions(&state, &live.conversation_id, &task_id, &actions)?;
+                let current = state
+                    .storage
+                    .get_task(&task_id)
+                    .map_err(display_error)?
+                    .ok_or_else(|| "Task was not found".to_string())?;
+                emit_task(&app, &state.storage, &current)?;
+                pending
+            }
         }
+        Err(error) if error.is_cancelled() => Vec::new(),
         Err(error) => {
-            state
-                .storage
-                .append_message(&MessageInput {
-                    id: Uuid::new_v4().to_string(),
-                    conversation_id: live.conversation_id.clone(),
-                    role: StoredMessageRole::Assistant,
-                    content: format!("The approved task stopped safely: {error}"),
-                    metadata: json!({ "taskId": task_id }),
-                })
-                .map_err(display_error)?;
-            let failed = state
-                .storage
-                .update_task_status(
-                    &task_id,
-                    StoredTaskStatus::Failed,
-                    None,
-                    Some(&error.to_string()),
-                )
-                .map_err(display_error)?;
-            remove_live_task(&state, &task_id)?;
-            emit_task(&app, &state.storage, &failed)?;
-            Vec::new()
+            let terminal_message = assistant_message_input(
+                &live.conversation_id,
+                &task_id,
+                &format!("The approved task stopped safely: {error}"),
+            );
+            match settle_task_with_message(
+                &state.storage,
+                &task_id,
+                StoredTaskStatus::Failed,
+                None,
+                Some(&error.to_string()),
+                Some(&terminal_message),
+            )? {
+                TaskSettlement::Settled(failed) => {
+                    remove_live_task(&state, &task_id)?;
+                    emit_task(&app, &state.storage, &failed)?;
+                    Vec::new()
+                }
+                TaskSettlement::CancellationPending => Vec::new(),
+            }
         }
     };
+    drop(session);
 
     let conversation =
         conversation_view(&state.storage, &live.conversation_id).map_err(display_error)?;
@@ -1382,26 +1503,14 @@ fn persist_runtime_actions(
     Ok(views)
 }
 
-fn persist_assistant_message(
-    storage: &Storage,
-    conversation_id: &str,
-    task_id: &str,
-    message: &ChatMessage,
-) -> Result<(), String> {
-    let content = message
-        .content
-        .as_deref()
-        .unwrap_or("CrowClaw completed the task without a text response.");
-    storage
-        .append_message(&MessageInput {
-            id: Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.into(),
-            role: StoredMessageRole::Assistant,
-            content: content.into(),
-            metadata: json!({ "taskId": task_id }),
-        })
-        .map_err(display_error)?;
-    Ok(())
+fn assistant_message_input(conversation_id: &str, task_id: &str, content: &str) -> MessageInput {
+    MessageInput {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.into(),
+        role: StoredMessageRole::Assistant,
+        content: content.into(),
+        metadata: json!({ "taskId": task_id }),
+    }
 }
 
 fn record_tool_executions(
@@ -1695,22 +1804,32 @@ fn display_error(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{Arc, Condvar, Mutex as StdMutex},
+        time::Duration,
+    };
 
+    use async_trait::async_trait;
     use serde_json::json;
     use tempfile::tempdir;
+    use tokio::sync::Notify;
 
     use super::{
-        action_details, action_kind, action_target, action_title, interrupt_unexecuted_action,
-        record_tool_executions, AppState,
+        action_details, action_kind, action_target, action_title, cancel_task_core,
+        interrupt_unexecuted_action, record_tool_executions, AppState, LiveTask,
     };
     use crate::{
-        agent::{CancellationToken, ChatMessage, PendingToolCall},
+        agent::{
+            AgentLimits, AgentRuntime, AgentSession, CancellationToken, ChatCompletion,
+            ChatCompletionRequest, ChatMessage, ChatProvider, PendingToolCall, ProviderError,
+        },
         crowquant_memory::{agent_memory_id, CrowQuantMemoryService},
-        storage::{ActionStatus, ConversationInput, ProposedActionInput, Storage},
+        storage::{
+            ActionStatus, ConversationInput, ProposedActionInput, Storage, TaskInput, TaskStatus,
+        },
         tools::{
-            MemorySearchMatch, RememberedMemory, ToolExecution, ToolExecutor, ToolOutput,
-            ToolPolicy, ToolRequest,
+            MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError, ToolExecution,
+            ToolExecutor, ToolOutput, ToolPolicy, ToolRequest,
         },
     };
 
@@ -2057,6 +2176,38 @@ mod tests {
     }
 
     #[test]
+    fn restart_finishes_a_durable_cancellation_request_as_cancelled() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_task(&TaskInput {
+                id: "task-cancellation-restart".into(),
+                conversation_id: None,
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Cancellation restart" }),
+            })
+            .unwrap();
+        storage
+            .update_task_status("task-cancellation-restart", TaskStatus::Running, None, None)
+            .unwrap();
+        storage
+            .request_task_cancellation("task-cancellation-restart")
+            .unwrap();
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .storage
+                .get_task("task-cancellation-restart")
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    #[test]
     fn restart_recovers_action_audit_after_durable_remember_insert() {
         let directory = tempdir().unwrap();
         let storage = Arc::new(Storage::open(directory.path()).unwrap());
@@ -2114,5 +2265,381 @@ mod tests {
             Some(agent_memory_id(&action.action_id).as_str())
         );
         assert_eq!(reopened.storage.list_crowquant_memories().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_during_approved_memory_execution_converges_on_cancelled() {
+        let directory = tempdir().unwrap();
+        let state = Arc::new(AppState::open(directory.path().to_path_buf()).unwrap());
+        let backend = Arc::new(BlockingCancellationMemory::default());
+        let (live, pending) = install_approved_memory_task(
+            &state,
+            "task-memory-execution",
+            Arc::new(UnusedProvider),
+            backend.clone(),
+        );
+        let action_id = pending.proposal.action_id.to_string();
+        let resumed = tokio::spawn(resume_pending_action(state.clone(), live, pending));
+
+        backend.wait_until_entered();
+        let (first_cancel, second_cancel) = tokio::join!(
+            cancel_task_core(&state, "task-memory-execution"),
+            cancel_task_core(&state, "task-memory-execution")
+        );
+        let first_cancel = first_cancel.unwrap();
+        let second_cancel = second_cancel.unwrap();
+        resumed.await.unwrap().unwrap();
+
+        assert_eq!(
+            usize::from(first_cancel.newly_cancelled) + usize::from(second_cancel.newly_cancelled),
+            1
+        );
+        assert_eq!(first_cancel.task.status, TaskStatus::Cancelled);
+        assert_eq!(second_cancel.task.status, TaskStatus::Cancelled);
+        let action = state
+            .storage
+            .get_proposed_action(&action_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.status, ActionStatus::Failed);
+        assert!(action
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancelled")));
+        assert!(state.active_tasks.lock().unwrap().is_empty());
+        assert!(state.action_to_task.lock().unwrap().is_empty());
+        let messages = state.storage.list_messages("conversation-1").unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.content.starts_with("Task cancelled."))
+                .count(),
+            1
+        );
+        assert!(messages
+            .iter()
+            .all(|message| !message.content.contains("stopped safely")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_post_tool_provider_call_preserves_action_success_and_cancels_task() {
+        let directory = tempdir().unwrap();
+        let state = Arc::new(AppState::open(directory.path().to_path_buf()).unwrap());
+        let provider = Arc::new(CancellationProvider::default());
+        let (live, pending) = install_approved_memory_task(
+            &state,
+            "task-provider-call",
+            provider.clone(),
+            Arc::new(ImmediateMemory),
+        );
+        let action_id = pending.proposal.action_id.to_string();
+        let resumed = tokio::spawn(resume_pending_action(state.clone(), live, pending));
+
+        provider.wait_until_entered().await;
+        let cancelled = cancel_task_core(&state, "task-provider-call")
+            .await
+            .unwrap();
+        resumed.await.unwrap().unwrap();
+
+        assert!(cancelled.newly_cancelled);
+        assert_eq!(cancelled.task.status, TaskStatus::Cancelled);
+        let action = state
+            .storage
+            .get_proposed_action(&action_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.status, ActionStatus::Succeeded);
+        assert_eq!(
+            action
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some("completed-before-provider")
+        );
+        assert!(state.active_tasks.lock().unwrap().is_empty());
+        assert!(state.action_to_task.lock().unwrap().is_empty());
+        assert_eq!(
+            state
+                .storage
+                .list_messages("conversation-1")
+                .unwrap()
+                .iter()
+                .filter(|message| message.content.starts_with("Task cancelled."))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_first_cancel_request_returns_existing_terminal_task() {
+        let directory = tempdir().unwrap();
+        let state = AppState::open(directory.path().to_path_buf()).unwrap();
+        state
+            .storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Completion first".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        state
+            .storage
+            .create_task(&TaskInput {
+                id: "task-completed".into(),
+                conversation_id: Some("conversation-1".into()),
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Completion first" }),
+            })
+            .unwrap();
+        state
+            .storage
+            .update_task_status("task-completed", TaskStatus::Running, None, None)
+            .unwrap();
+        state
+            .storage
+            .update_task_status(
+                "task-completed",
+                TaskStatus::Succeeded,
+                Some(&json!({ "finished": true })),
+                None,
+            )
+            .unwrap();
+
+        let result = cancel_task_core(&state, "task-completed").await.unwrap();
+        assert!(!result.newly_cancelled);
+        assert_eq!(result.task.status, TaskStatus::Succeeded);
+        assert!(!result.task.cancellation_requested);
+        assert!(state
+            .storage
+            .list_messages("conversation-1")
+            .unwrap()
+            .is_empty());
+    }
+
+    fn install_approved_memory_task(
+        state: &AppState,
+        task_id: &str,
+        provider: Arc<dyn ChatProvider>,
+        backend: Arc<dyn MemoryBackend>,
+    ) -> (Arc<LiveTask>, PendingToolCall) {
+        state
+            .storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Cancellation race".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        state
+            .storage
+            .create_task(&TaskInput {
+                id: task_id.into(),
+                conversation_id: Some("conversation-1".into()),
+                kind: "agent-turn".into(),
+                payload: json!({ "title": "Cancellation race" }),
+            })
+            .unwrap();
+        state
+            .storage
+            .update_task_status(task_id, TaskStatus::Running, None, None)
+            .unwrap();
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend);
+        let proposal = tools
+            .propose(ToolRequest::RememberMemory {
+                text: "race-safe memory".into(),
+            })
+            .unwrap();
+        let pending = PendingToolCall {
+            provider_tool_call_id: "call-memory".into(),
+            proposal: proposal.clone(),
+        };
+        state
+            .storage
+            .create_proposed_action(&ProposedActionInput {
+                id: proposal.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: Some(task_id.into()),
+                tool_name: proposal.tool_name.clone(),
+                summary: proposal.summary.clone(),
+                request: serde_json::to_value(&proposal.request).unwrap(),
+            })
+            .unwrap();
+        state
+            .storage
+            .approve_action(
+                &proposal.action_id.to_string(),
+                Some("Approved once by user"),
+            )
+            .unwrap();
+        let runtime = Arc::new(AgentRuntime::new(provider, tools, AgentLimits::default()).unwrap());
+        let mut session =
+            AgentSession::new("local-model", vec![ChatMessage::user("remember it")]).unwrap();
+        session.pending_actions = vec![pending.clone()];
+        runtime
+            .resolve_action(
+                &session,
+                &proposal.approval_token,
+                crate::tools::ApprovalDecision::Approve,
+            )
+            .unwrap();
+        let live = Arc::new(LiveTask {
+            runtime,
+            session: tokio::sync::Mutex::new(session),
+            cancellation: CancellationToken::new(),
+            conversation_id: "conversation-1".into(),
+        });
+        state
+            .active_tasks
+            .lock()
+            .unwrap()
+            .insert(task_id.into(), live.clone());
+        state
+            .action_to_task
+            .lock()
+            .unwrap()
+            .insert(proposal.action_id.to_string(), task_id.into());
+        (live, pending)
+    }
+
+    async fn resume_pending_action(
+        state: Arc<AppState>,
+        live: Arc<LiveTask>,
+        pending: PendingToolCall,
+    ) -> Result<(), String> {
+        let mut session = live.session.lock().await;
+        let before_message_len = session.messages.len();
+        let run = live
+            .runtime
+            .run_until_blocked(&mut session, &live.cancellation)
+            .await;
+        record_tool_executions(
+            &state.storage,
+            std::slice::from_ref(&pending),
+            &session.messages[before_message_len.min(session.messages.len())..],
+        )?;
+        match run {
+            Err(error) if error.is_cancelled() => Ok(()),
+            other => Err(format!("expected cancellation, received {other:?}")),
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingCancellationMemory {
+        entered: (StdMutex<bool>, Condvar),
+    }
+
+    impl BlockingCancellationMemory {
+        fn wait_until_entered(&self) {
+            let (lock, condition) = &self.entered;
+            let mut entered = lock.lock().unwrap();
+            while !*entered {
+                let (next, timeout) = condition
+                    .wait_timeout(entered, Duration::from_secs(2))
+                    .unwrap();
+                entered = next;
+                assert!(
+                    !timeout.timed_out() || *entered,
+                    "memory tool did not start"
+                );
+            }
+        }
+    }
+
+    impl MemoryBackend for BlockingCancellationMemory {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            _text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            let (lock, condition) = &self.entered;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err(ToolError::Cancelled)
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            unreachable!("test only exercises remember")
+        }
+    }
+
+    struct ImmediateMemory;
+
+    impl MemoryBackend for ImmediateMemory {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            Ok(RememberedMemory {
+                id: "completed-before-provider".into(),
+                text: text.into(),
+                created_at_ms: 1,
+                original_bytes: 2048,
+                compressed_bytes: 161,
+                algorithm: "CrowQuant test".into(),
+            })
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            unreachable!("test only exercises remember")
+        }
+    }
+
+    struct UnusedProvider;
+
+    #[async_trait]
+    impl ChatProvider for UnusedProvider {
+        async fn complete(
+            &self,
+            _request: ChatCompletionRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ChatCompletion, ProviderError> {
+            panic!("execution cancellation must stop before another provider call")
+        }
+    }
+
+    #[derive(Default)]
+    struct CancellationProvider {
+        entered: Notify,
+    }
+
+    impl CancellationProvider {
+        async fn wait_until_entered(&self) {
+            self.entered.notified().await;
+        }
+    }
+
+    #[async_trait]
+    impl ChatProvider for CancellationProvider {
+        async fn complete(
+            &self,
+            _request: ChatCompletionRequest,
+            cancellation: &CancellationToken,
+        ) -> Result<ChatCompletion, ProviderError> {
+            self.entered.notify_one();
+            cancellation.cancelled().await;
+            Err(ProviderError::Cancelled)
+        }
     }
 }
