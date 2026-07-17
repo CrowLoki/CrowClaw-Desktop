@@ -17,7 +17,7 @@ use crate::agent::CancellationToken;
 
 use super::{
     approval::{ApprovalRegistry, ClaimedAction},
-    ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
+    ActionId, ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
     MemoryBackend, ProposedAction, ToolError, ToolExecution, ToolOutput, ToolRequest,
 };
 
@@ -147,7 +147,10 @@ impl ToolExecutor {
                     });
                 }
 
-                match self.perform(proposal.request, cancellation).await {
+                match self
+                    .perform(&action_id, proposal.request, cancellation)
+                    .await
+                {
                     Ok(output) => Ok(ToolExecution::Executed { action_id, output }),
                     Err(error) => Ok(ToolExecution::Failed { action_id, error }),
                 }
@@ -157,6 +160,7 @@ impl ToolExecutor {
 
     async fn perform(
         &self,
+        action_id: &ActionId,
         request: ToolRequest,
         cancellation: &CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
@@ -166,7 +170,9 @@ impl ToolExecutor {
             ToolRequest::RunCommand { program, args, cwd } => {
                 self.run_command(program, args, cwd, cancellation).await
             }
-            ToolRequest::RememberMemory { text } => self.remember_memory(&text, cancellation),
+            ToolRequest::RememberMemory { text } => {
+                self.remember_memory(action_id, &text, cancellation)
+            }
             ToolRequest::SearchMemory { query, limit } => {
                 self.search_memory(&query, limit, cancellation)
             }
@@ -175,6 +181,7 @@ impl ToolExecutor {
 
     fn remember_memory(
         &self,
+        action_id: &ActionId,
         text: &str,
         cancellation: &CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
@@ -186,7 +193,7 @@ impl ToolExecutor {
             .as_ref()
             .ok_or(ToolError::MemoryUnavailable)?;
         Ok(ToolOutput::MemoryRemembered {
-            memory: backend.remember(text)?,
+            memory: backend.remember(action_id, text, cancellation)?,
         })
     }
 
@@ -205,7 +212,7 @@ impl ToolExecutor {
             .ok_or(ToolError::MemoryUnavailable)?;
         Ok(ToolOutput::MemorySearch {
             query: query.into(),
-            matches: backend.search(query, limit)?,
+            results: backend.search(query, limit, cancellation)?,
         })
     }
 
@@ -513,8 +520,9 @@ mod tests {
         path::Path,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
+            Arc, Condvar, Mutex as StdMutex,
         },
+        time::Duration,
     };
 
     use tempfile::tempdir;
@@ -759,6 +767,45 @@ mod tests {
         assert!(backend.remembered.lock().unwrap().is_empty());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_after_memory_backend_starts_stops_before_mutation() {
+        let backend = Arc::new(BlockingMemoryBackend::default());
+        let executor = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(backend.clone());
+        let proposal = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "cancel after start".into(),
+            })
+            .unwrap();
+        executor
+            .resolve(&proposal.approval_token, ApprovalDecision::Approve)
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let executing = {
+            let executor = executor.clone();
+            let token = proposal.approval_token.clone();
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move { executor.execute(&token, &cancellation).await })
+        };
+
+        backend.wait_until_entered();
+        cancellation.cancel();
+        let execution = tokio::time::timeout(Duration::from_secs(2), executing)
+            .await
+            .expect("memory backend did not observe cancellation")
+            .expect("execution task panicked")
+            .unwrap();
+        assert!(matches!(
+            execution,
+            ToolExecution::Failed {
+                error: ToolError::Cancelled,
+                ..
+            }
+        ));
+        assert_eq!(backend.mutations.load(Ordering::SeqCst), 0);
+    }
+
     #[derive(Default)]
     struct CountingMemoryBackend {
         remember_calls: AtomicUsize,
@@ -767,7 +814,15 @@ mod tests {
     }
 
     impl MemoryBackend for CountingMemoryBackend {
-        fn remember(&self, text: &str) -> Result<RememberedMemory, ToolError> {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
             self.remember_calls.fetch_add(1, Ordering::SeqCst);
             self.remembered.lock().unwrap().push(text.into());
             Ok(RememberedMemory {
@@ -780,14 +835,71 @@ mod tests {
             })
         }
 
-        fn search(&self, query: &str, limit: usize) -> Result<Vec<MemorySearchMatch>, ToolError> {
+        fn search(
+            &self,
+            query: &str,
+            limit: usize,
+            cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
             self.search_calls.fetch_add(1, Ordering::SeqCst);
             Ok(vec![MemorySearchMatch {
                 id: "memory-1".into(),
-                text: format!("match for {query}"),
+                text: format!("top-ranked result for {query}"),
                 created_at_ms: 1,
                 score: limit as f64 / 20.0,
             }])
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingMemoryBackend {
+        entered: (StdMutex<bool>, Condvar),
+        mutations: AtomicUsize,
+    }
+
+    impl BlockingMemoryBackend {
+        fn wait_until_entered(&self) {
+            let (lock, condition) = &self.entered;
+            let mut entered = lock.lock().unwrap();
+            while !*entered {
+                let (next, timeout) = condition
+                    .wait_timeout(entered, Duration::from_secs(2))
+                    .unwrap();
+                entered = next;
+                assert!(
+                    !timeout.timed_out() || *entered,
+                    "memory backend was never entered"
+                );
+            }
+        }
+    }
+
+    impl MemoryBackend for BlockingMemoryBackend {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            _text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            let (lock, condition) = &self.entered;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err(ToolError::Cancelled)
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            unreachable!("blocking test exercises remember only")
         }
     }
 

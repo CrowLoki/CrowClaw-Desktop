@@ -30,6 +30,10 @@ impl ActionId {
     pub(crate) fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
 }
 
 impl fmt::Display for ActionId {
@@ -99,7 +103,7 @@ impl ToolRequest {
                 format!("Store this text in local CrowQuant memory: {text:?}")
             }
             Self::SearchMemory { query, limit } => format!(
-                "Search local CrowQuant memory for {query:?} and return up to {limit} matches"
+                "Rank local CrowQuant memory for {query:?} and return up to {limit} top-ranked results"
             ),
         }
     }
@@ -288,7 +292,7 @@ pub enum ToolOutput {
     },
     MemorySearch {
         query: String,
-        matches: Vec<MemorySearchMatch>,
+        results: Vec<MemorySearchMatch>,
     },
 }
 

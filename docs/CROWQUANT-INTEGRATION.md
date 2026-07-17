@@ -52,8 +52,15 @@ Proposal parsing performs no CrowQuant read or write. A denied or pre-execution
 cancelled call never reaches the memory service. Once approved, the real tool
 result is bound to its provider call ID, persisted in the approved-action
 audit, and returned to the connected model. Search approval therefore states
-plainly that matching stored text will be returned to both the model and audit.
+plainly that top-ranked stored text and compressed lexical similarity scores will be returned to both the model and audit.
 Batched tool proposals retain independent decisions and exact result
 binding.
+
+Agent-created CrowQuant rows use an action-bound deterministic ID. If the
+application stops after the SQLite memory insert but before its separate action
+success write, startup reconstructs the exact successful tool result from that
+row. Other approved-but-unexecuted actions become failed, while still-pending
+actions become denied, so restart cannot leave an approval stranded or an
+agent-created memory without durable action provenance.
 
 This integration does not edit or replace the existing CrowQuant repository.

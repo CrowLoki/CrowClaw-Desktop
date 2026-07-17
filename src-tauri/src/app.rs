@@ -17,7 +17,10 @@ use crate::{
         ChatRole, OpenAiCompatibleClient, PendingToolCall, ProviderConfig, ProviderHealthState,
         ProviderPreset,
     },
-    crowquant_memory::{CrowQuantMemoryService, CrowQuantSearchHit as ServiceCrowQuantSearchHit},
+    crowquant_memory::{
+        agent_memory_id, remembered_memory, CrowQuantMemoryService,
+        CrowQuantSearchHit as ServiceCrowQuantSearchHit,
+    },
     storage::{
         ActionStatus as StoredActionStatus, ConversationInput,
         CrowQuantMemory as StoredCrowQuantMemory, Message, MessageInput,
@@ -25,7 +28,10 @@ use crate::{
         ProviderProfile, ProviderProfileInput, Storage, StorageError, StoredTask, TaskInput,
         TaskStatus as StoredTaskStatus,
     },
-    tools::{ApprovalDecision, ProposedAction as RuntimeAction, ToolExecutor, ToolPolicy},
+    tools::{
+        ActionId, ApprovalDecision, ProposedAction as RuntimeAction, ToolExecution, ToolExecutor,
+        ToolOutput, ToolPolicy,
+    },
 };
 
 const SETTINGS_KEY: &str = "app_settings";
@@ -56,9 +62,7 @@ impl AppState {
 
         // Approval tokens are intentionally process-local. Reconcile stale work
         // safely rather than exposing an approval button that cannot execute.
-        for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Pending))? {
-            let _ = storage.deny_action(&action.id, Some("Interrupted by application restart"));
-        }
+        reconcile_actions_after_restart(&storage)?;
         for task in storage.list_tasks(None)? {
             if matches!(
                 task.status,
@@ -82,6 +86,55 @@ impl AppState {
             session_api_keys: Mutex::new(HashMap::new()),
         })
     }
+}
+
+fn reconcile_actions_after_restart(storage: &Storage) -> Result<(), StorageError> {
+    for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Pending))? {
+        storage.deny_action(&action.id, Some("Interrupted by application restart"))?;
+    }
+    for action in storage.list_proposed_actions(None, Some(StoredActionStatus::Approved))? {
+        if action.tool_name == "remember_memory" {
+            if let Ok(action_id) = ActionId::parse(&action.id) {
+                let memory_id = agent_memory_id(&action_id);
+                if let Some(memory) = storage.get_crowquant_memory(&memory_id)? {
+                    let execution = ToolExecution::Executed {
+                        action_id,
+                        output: ToolOutput::MemoryRemembered {
+                            memory: remembered_memory(memory),
+                        },
+                    };
+                    storage.record_action_success(&action.id, &serde_json::to_value(execution)?)?;
+                    continue;
+                }
+            }
+        }
+        storage.record_action_failure(
+            &action.id,
+            "Application stopped before the approved action returned a durable result",
+        )?;
+    }
+    Ok(())
+}
+
+fn interrupt_unexecuted_action(
+    storage: &Storage,
+    action_id: &str,
+    reason: &str,
+) -> Result<(), StorageError> {
+    let Some(action) = storage.get_proposed_action(action_id)? else {
+        return Ok(());
+    };
+    match action.status {
+        StoredActionStatus::Pending => {
+            storage.deny_action(action_id, Some(reason))?;
+        }
+        StoredActionStatus::Approved => {
+            storage.record_action_failure(action_id, reason)?;
+        }
+        StoredActionStatus::Denied | StoredActionStatus::Succeeded | StoredActionStatus::Failed => {
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -821,16 +874,23 @@ pub async fn crowclaw_task_cancel(
         let session = live.session.lock().await;
         for pending in &session.pending_actions {
             let action_id = pending.proposal.action_id.to_string();
-            let _ = live.runtime.resolve_action(
-                &session,
-                &pending.proposal.approval_token,
-                ApprovalDecision::Deny {
-                    reason: Some("Task cancelled by user".into()),
-                },
-            );
-            let _ = state
+            let stored = state
                 .storage
-                .deny_action(&action_id, Some("Task cancelled by user"));
+                .get_proposed_action(&action_id)
+                .map_err(display_error)?;
+            if stored.as_ref().map(|action| action.status) == Some(StoredActionStatus::Pending) {
+                live.runtime
+                    .resolve_action(
+                        &session,
+                        &pending.proposal.approval_token,
+                        ApprovalDecision::Deny {
+                            reason: Some("Task cancelled by user".into()),
+                        },
+                    )
+                    .map_err(display_error)?;
+            }
+            interrupt_unexecuted_action(&state.storage, &action_id, "Task cancelled by user")
+                .map_err(display_error)?;
         }
     }
     let cancelled = state
@@ -848,7 +908,7 @@ pub async fn crowclaw_task_cancel(
                 id: Uuid::new_v4().to_string(),
                 conversation_id: conversation_id.clone(),
                 role: StoredMessageRole::Assistant,
-                content: "Task cancelled. No further action was taken.".into(),
+                content: "Task cancelled. Completed approved actions remain recorded; every unexecuted action was closed.".into(),
                 metadata: json!({ "taskId": task.id }),
             })
             .map_err(display_error)?;
@@ -1351,42 +1411,78 @@ fn record_tool_executions(
 ) -> Result<Vec<(String, MemoryRecord)>, String> {
     let mut recorded = Vec::new();
     for call in pending {
-        let Some(tool_result) = messages
-            .iter()
-            .find(|message| {
-                message.role == ChatRole::Tool
-                    && message.tool_call_id.as_deref() == Some(&call.provider_tool_call_id)
-            })
-            .and_then(|message| message.content.as_deref())
-            .and_then(|content| serde_json::from_str::<Value>(content).ok())
-        else {
+        let Some(message) = messages.iter().find(|message| {
+            message.role == ChatRole::Tool
+                && message.tool_call_id.as_deref() == Some(&call.provider_tool_call_id)
+        }) else {
             continue;
         };
         let action_id = call.proposal.action_id.to_string();
-        match tool_result.get("state").and_then(Value::as_str) {
-            Some("executed") => {
+        let validation_error = if message.name.as_deref() != Some(&call.proposal.tool_name) {
+            Some(format!(
+                "Tool result name did not match approved action: expected {:?}, received {:?}",
+                call.proposal.tool_name, message.name
+            ))
+        } else {
+            match message
+                .content
+                .as_deref()
+                .ok_or_else(|| "Tool result had no content".to_string())
+                .and_then(|content| {
+                    serde_json::from_str::<ToolExecution>(content)
+                        .map_err(|error| format!("Tool returned an invalid result: {error}"))
+                }) {
+                Ok(execution) if execution_action_id(&execution) == &call.proposal.action_id => {
+                    let tool_result = serde_json::to_value(&execution).map_err(display_error)?;
+                    match execution {
+                        ToolExecution::Executed { .. } => {
+                            let action = storage
+                                .record_action_success(&action_id, &tool_result)
+                                .map_err(display_error)?;
+                            recorded.push((action_id.clone(), memory_from_action(&action)));
+                        }
+                        ToolExecution::Failed { error, .. } => {
+                            storage
+                                .record_action_failure(&action_id, &error.to_string())
+                                .map_err(display_error)?;
+                        }
+                        ToolExecution::Denied { .. } => {
+                            // The user's denial was already durably recorded before the
+                            // runtime received the decision. Do not rewrite it as success.
+                        }
+                    }
+                    None
+                }
+                Ok(execution) => Some(format!(
+                    "Tool result action ID did not match approved action: expected {action_id}, received {}",
+                    execution_action_id(&execution)
+                )),
+                Err(error) => Some(error),
+            }
+        };
+        if let Some(error) = validation_error {
+            if storage
+                .get_proposed_action(&action_id)
+                .map_err(display_error)?
+                .is_some_and(|action| action.status == StoredActionStatus::Approved)
+            {
                 let action = storage
-                    .record_action_success(&action_id, &tool_result)
+                    .record_action_failure(&action_id, &error)
                     .map_err(display_error)?;
-                recorded.push((action_id, memory_from_action(&action)));
+                debug_assert_eq!(action.status, StoredActionStatus::Failed);
             }
-            Some("failed") => {
-                storage
-                    .record_action_failure(&action_id, &tool_result.to_string())
-                    .map_err(display_error)?;
-            }
-            Some("denied") => {
-                // The user's denial was already durably recorded before the
-                // runtime received the decision. Do not rewrite it as success.
-            }
-            _ => {
-                storage
-                    .record_action_failure(&action_id, "Tool returned an invalid result")
-                    .map_err(display_error)?;
-            }
+            return Err(error);
         }
     }
     Ok(recorded)
+}
+
+fn execution_action_id(execution: &ToolExecution) -> &ActionId {
+    match execution {
+        ToolExecution::Executed { action_id, .. }
+        | ToolExecution::Denied { action_id, .. }
+        | ToolExecution::Failed { action_id, .. } => action_id,
+    }
 }
 
 fn memory_from_action(action: &StoredAction) -> MemoryRecord {
@@ -1560,10 +1656,10 @@ fn action_details(tool_name: &str, request: &Value) -> Vec<String> {
                 request.get("query").and_then(Value::as_str).unwrap_or("")
             ),
             format!(
-                "Return up to {} compressed-lexical matches",
+                "Return up to {} top-ranked compressed-lexical results",
                 request.get("limit").and_then(Value::as_u64).unwrap_or(5)
             ),
-            "Read and return matching stored text to the connected model and approved-action audit"
+            "Read and return top-ranked stored text with compressed lexical similarity scores to the connected model and approved-action audit"
                 .into(),
         ],
         _ => vec!["Run only the action shown here".into()],
@@ -1599,12 +1695,18 @@ fn display_error(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{action_details, action_kind, action_target, action_title, record_tool_executions};
+    use super::{
+        action_details, action_kind, action_target, action_title, interrupt_unexecuted_action,
+        record_tool_executions, AppState,
+    };
     use crate::{
-        agent::{ChatMessage, PendingToolCall},
+        agent::{CancellationToken, ChatMessage, PendingToolCall},
+        crowquant_memory::{agent_memory_id, CrowQuantMemoryService},
         storage::{ActionStatus, ConversationInput, ProposedActionInput, Storage},
         tools::{
             MemorySearchMatch, RememberedMemory, ToolExecution, ToolExecutor, ToolOutput,
@@ -1707,7 +1809,7 @@ mod tests {
             action_id: search.action_id.clone(),
             output: ToolOutput::MemorySearch {
                 query: "qubit".into(),
-                matches: vec![MemorySearchMatch {
+                results: vec![MemorySearchMatch {
                     id: "searched-row".into(),
                     text: "stored qubit record".into(),
                     created_at_ms: 1,
@@ -1754,9 +1856,263 @@ mod tests {
             stored_search
                 .result
                 .as_ref()
-                .and_then(|value| value.pointer("/output/matches/0/id"))
+                .and_then(|value| value.pointer("/output/results/0/id"))
                 .and_then(|value| value.as_str()),
             Some("searched-row")
         );
+    }
+
+    #[test]
+    fn mismatched_embedded_action_id_is_failed_instead_of_misaudited() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Memory mismatch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let expected = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "qubit".into(),
+                limit: 3,
+            })
+            .unwrap();
+        let wrong = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "grocery".into(),
+                limit: 3,
+            })
+            .unwrap();
+        storage
+            .create_proposed_action(&ProposedActionInput {
+                id: expected.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: None,
+                tool_name: expected.tool_name.clone(),
+                summary: expected.summary.clone(),
+                request: serde_json::to_value(&expected.request).unwrap(),
+            })
+            .unwrap();
+        storage
+            .approve_action(&expected.action_id.to_string(), Some("test approval"))
+            .unwrap();
+        let pending = vec![PendingToolCall {
+            provider_tool_call_id: "call-search".into(),
+            proposal: expected.clone(),
+        }];
+        let mismatched = ToolExecution::Executed {
+            action_id: wrong.action_id,
+            output: ToolOutput::MemorySearch {
+                query: "grocery".into(),
+                results: Vec::new(),
+            },
+        };
+        let messages = vec![ChatMessage::tool(
+            "call-search",
+            "search_memory",
+            serde_json::to_string(&mismatched).unwrap(),
+        )];
+
+        let error = record_tool_executions(&storage, &pending, &messages).unwrap_err();
+        assert!(error.contains("action ID did not match"));
+        let stored = storage
+            .get_proposed_action(&expected.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ActionStatus::Failed);
+        assert!(stored
+            .error
+            .as_deref()
+            .is_some_and(|value| value.contains("action ID did not match")));
+    }
+
+    #[test]
+    fn cancellation_closes_approved_and_pending_batch_actions() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Cancelled batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let approved = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "approved but not executed".into(),
+            })
+            .unwrap();
+        let pending = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "still pending".into(),
+                limit: 3,
+            })
+            .unwrap();
+        for action in [&approved, &pending] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+        }
+        storage
+            .approve_action(&approved.action_id.to_string(), Some("approved once"))
+            .unwrap();
+
+        for action in [&approved, &pending] {
+            interrupt_unexecuted_action(
+                &storage,
+                &action.action_id.to_string(),
+                "Task cancelled by user",
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            storage
+                .get_proposed_action(&approved.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Failed
+        );
+        assert_eq!(
+            storage
+                .get_proposed_action(&pending.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Denied
+        );
+    }
+
+    #[test]
+    fn restart_closes_approved_and_pending_batch_actions() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Restarted batch".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let approved = executor
+            .propose(ToolRequest::SearchMemory {
+                query: "approved but not executed".into(),
+                limit: 3,
+            })
+            .unwrap();
+        let pending = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "still pending".into(),
+            })
+            .unwrap();
+        for action in [&approved, &pending] {
+            storage
+                .create_proposed_action(&ProposedActionInput {
+                    id: action.action_id.to_string(),
+                    conversation_id: "conversation-1".into(),
+                    task_id: None,
+                    tool_name: action.tool_name.clone(),
+                    summary: action.summary.clone(),
+                    request: serde_json::to_value(&action.request).unwrap(),
+                })
+                .unwrap();
+        }
+        storage
+            .approve_action(&approved.action_id.to_string(), Some("approved once"))
+            .unwrap();
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .storage
+                .get_proposed_action(&approved.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Failed
+        );
+        assert_eq!(
+            reopened
+                .storage
+                .get_proposed_action(&pending.action_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            ActionStatus::Denied
+        );
+    }
+
+    #[test]
+    fn restart_recovers_action_audit_after_durable_remember_insert() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(directory.path()).unwrap());
+        storage
+            .create_conversation(&ConversationInput {
+                id: "conversation-1".into(),
+                title: "Recovered memory".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let executor = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        let action = executor
+            .propose(ToolRequest::RememberMemory {
+                text: "durable before audit".into(),
+            })
+            .unwrap();
+        storage
+            .create_proposed_action(&ProposedActionInput {
+                id: action.action_id.to_string(),
+                conversation_id: "conversation-1".into(),
+                task_id: None,
+                tool_name: action.tool_name.clone(),
+                summary: action.summary.clone(),
+                request: serde_json::to_value(&action.request).unwrap(),
+            })
+            .unwrap();
+        storage
+            .approve_action(&action.action_id.to_string(), Some("approved once"))
+            .unwrap();
+        let service = CrowQuantMemoryService::new(storage.clone());
+        let inserted = service
+            .remember_agent_record(
+                &action.action_id,
+                "durable before audit",
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(inserted.id, agent_memory_id(&action.action_id));
+        drop(service);
+        drop(storage);
+
+        let reopened = AppState::open(directory.path().to_path_buf()).unwrap();
+        let stored = reopened
+            .storage
+            .get_proposed_action(&action.action_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ActionStatus::Succeeded);
+        assert_eq!(
+            stored
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/output/memory/id"))
+                .and_then(|value| value.as_str()),
+            Some(agent_memory_id(&action.action_id).as_str())
+        );
+        assert_eq!(reopened.storage.list_crowquant_memories().unwrap().len(), 1);
     }
 }

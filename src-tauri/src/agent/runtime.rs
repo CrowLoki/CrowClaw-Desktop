@@ -1,4 +1,4 @@
-use std::{mem, sync::Arc};
+use std::{collections::HashSet, mem, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,22 @@ impl AgentRuntime {
                     boundary: "tool_calls".into(),
                     limit: self.limits.max_tool_calls,
                 });
+            }
+
+            let mut provider_call_ids = HashSet::with_capacity(tool_calls.len());
+            for call in &tool_calls {
+                if call.id.trim().is_empty() {
+                    return Err(AgentError::InvalidToolCall {
+                        tool_name: call.name.clone(),
+                        message: "provider tool-call ID cannot be empty".into(),
+                    });
+                }
+                if !provider_call_ids.insert(call.id.clone()) {
+                    return Err(AgentError::InvalidToolCall {
+                        tool_name: call.name.clone(),
+                        message: format!("provider returned duplicate tool-call ID {:?}", call.id),
+                    });
+                }
             }
 
             // Parse every call before recording any proposal so malformed batches are atomic.
@@ -564,6 +580,56 @@ mod tests {
         assert!(search_output.contains("search-result"));
     }
 
+    #[tokio::test]
+    async fn duplicate_provider_tool_call_ids_are_rejected_before_proposal_or_memory_access() {
+        let completion = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![
+                    AssistantToolCall {
+                        id: "duplicate-call".into(),
+                        name: "remember_memory".into(),
+                        arguments: json!({ "text": "first" }),
+                    },
+                    AssistantToolCall {
+                        id: "duplicate-call".into(),
+                        name: "search_memory".into(),
+                        arguments: json!({ "query": "first" }),
+                    },
+                ],
+            ),
+            finish_reason: Some("tool_calls".into()),
+            usage: None,
+        };
+        let provider = Arc::new(FakeProvider::new([completion]));
+        let memory = Arc::new(RuntimeMemoryBackend::default());
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_memory_backend(memory.clone());
+        let runtime = AgentRuntime::new(provider, tools, AgentLimits::default()).unwrap();
+        let mut session = AgentSession::new(
+            "local-model",
+            vec![ChatMessage::user("make two memory calls")],
+        )
+        .unwrap();
+
+        let error = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::agent::AgentError::InvalidToolCall { message, .. }
+                if message.contains("duplicate tool-call ID")
+        ));
+        assert!(session.pending_actions.is_empty());
+        assert_eq!(session.tool_calls, 0);
+        assert_eq!(memory.remember_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(memory.search_calls.load(Ordering::SeqCst), 0);
+    }
+
     struct FakeProvider {
         responses: Mutex<VecDeque<ChatCompletion>>,
         requests: Mutex<Vec<ChatCompletionRequest>>,
@@ -576,7 +642,15 @@ mod tests {
     }
 
     impl MemoryBackend for RuntimeMemoryBackend {
-        fn remember(&self, text: &str) -> Result<RememberedMemory, ToolError> {
+        fn remember(
+            &self,
+            _action_id: &crate::tools::ActionId,
+            text: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<RememberedMemory, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
             self.remember_calls.fetch_add(1, Ordering::SeqCst);
             Ok(RememberedMemory {
                 id: "memory-remember".into(),
@@ -588,7 +662,15 @@ mod tests {
             })
         }
 
-        fn search(&self, query: &str, _limit: usize) -> Result<Vec<MemorySearchMatch>, ToolError> {
+        fn search(
+            &self,
+            query: &str,
+            _limit: usize,
+            cancellation: &CancellationToken,
+        ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
             self.search_calls.fetch_add(1, Ordering::SeqCst);
             Ok(vec![MemorySearchMatch {
                 id: "search-result".into(),

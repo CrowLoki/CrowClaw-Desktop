@@ -22,6 +22,7 @@ import type {
   ConversationSummary,
   CrowClawGateway,
   DiscoveredEndpoint,
+  MemoryRecord,
   ModelEndpointDraft,
   SelectedFolder,
 } from "./gateway/contracts";
@@ -49,6 +50,18 @@ function upsertSummary(
 
 function upsertTask(tasks: AgentTask[], task: AgentTask): AgentTask[] {
   return [task, ...tasks.filter(({ id }) => id !== task.id)];
+}
+
+export function mergeMemoryRecords(
+  current: MemoryRecord[],
+  returned: MemoryRecord[],
+): MemoryRecord[] {
+  const seen = new Set<string>();
+  return [...returned, ...current].filter(({ id }) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 export function App({ gateway = defaultGateway }: AppProps) {
@@ -232,7 +245,6 @@ export function App({ gateway = defaultGateway }: AppProps) {
           : result.memory
             ? [result.memory]
             : [];
-        const returnedMemoryIds = new Set(returnedMemories.map(({ id }) => id));
         return {
           ...current,
           conversations: upsertSummary(current.conversations, result.summary),
@@ -244,7 +256,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
             ),
           ],
           memories: returnedMemories.length > 0
-            ? [...returnedMemories, ...current.memories.filter(({ id }) => !returnedMemoryIds.has(id))]
+            ? mergeMemoryRecords(current.memories, returnedMemories)
             : current.memories,
         };
       });

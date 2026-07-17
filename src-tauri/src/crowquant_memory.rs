@@ -3,9 +3,13 @@ use std::{cmp::Ordering, sync::Arc};
 use uuid::Uuid;
 
 use crate::{
+    agent::CancellationToken,
     crowquant,
     storage::{CrowQuantMemory, CrowQuantMemoryInput, Storage},
-    tools::{MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError, MEMORY_TEXT_MAX_BYTES},
+    tools::{
+        ActionId, MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError,
+        MEMORY_TEXT_MAX_BYTES,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,13 +36,57 @@ impl CrowQuantMemoryService {
     }
 
     pub fn remember_record(&self, text: &str) -> Result<CrowQuantMemory, String> {
-        let text = require_memory_text("Memory text", text)?;
-        let vector = crowquant::vectorize_text(text)?;
-        let block = crowquant::quantize(&vector)?;
+        self.remember_record_with_id(Uuid::new_v4().to_string(), text, &CancellationToken::new())
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn remember_agent_record(
+        &self,
+        action_id: &ActionId,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<CrowQuantMemory, ToolError> {
+        self.remember_record_with_id(agent_memory_id(action_id), text, cancellation)
+    }
+
+    pub fn search_records(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<CrowQuantSearchHit>, String> {
+        self.search_records_cancellable(query, limit, &CancellationToken::new())
+            .map_err(|error| error.to_string())
+    }
+
+    fn remember_record_with_id(
+        &self,
+        id: String,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<CrowQuantMemory, ToolError> {
+        ensure_not_cancelled(cancellation)?;
+        let text = require_memory_text("Memory text", text).map_err(|message| {
+            ToolError::MemoryOperation {
+                operation: "remember".into(),
+                message,
+            }
+        })?;
+        let vector =
+            crowquant::vectorize_text(text).map_err(|message| ToolError::MemoryOperation {
+                operation: "remember".into(),
+                message,
+            })?;
+        ensure_not_cancelled(cancellation)?;
+        let block = crowquant::quantize(&vector).map_err(|message| ToolError::MemoryOperation {
+            operation: "remember".into(),
+            message,
+        })?;
         let serialized = crowquant::serialize(&block);
+        // This is the final cooperative boundary before SQLite mutates.
+        ensure_not_cancelled(cancellation)?;
         self.storage
             .create_crowquant_memory(&CrowQuantMemoryInput {
-                id: Uuid::new_v4().to_string(),
+                id,
                 text: text.into(),
                 block: serialized,
                 format_version: 1,
@@ -48,34 +96,71 @@ impl CrowQuantMemoryService {
                 bits: block.bits,
                 original_bytes: (vector.len() * std::mem::size_of::<f64>()) as u64,
             })
-            .map_err(|error| error.to_string())
+            .map_err(|error| ToolError::MemoryOperation {
+                operation: "remember".into(),
+                message: error.to_string(),
+            })
     }
 
-    pub fn search_records(
+    fn search_records_cancellable(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<CrowQuantSearchHit>, String> {
-        let query = require_memory_text("Memory query", query)?;
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<CrowQuantSearchHit>, ToolError> {
+        ensure_not_cancelled(cancellation)?;
+        let query = require_memory_text("Memory query", query).map_err(|message| {
+            ToolError::MemoryOperation {
+                operation: "search".into(),
+                message,
+            }
+        })?;
         let limit = limit.clamp(1, 20);
-        let query_block = crowquant::quantize(&crowquant::vectorize_text(query)?)?;
-        let mut hits = self
-            .storage
-            .list_crowquant_memories()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(|memory| {
-                let block = crowquant::deserialize(&memory.block)?;
-                if block.dimension != query_block.dimension
-                    || block.seed != query_block.seed
-                    || block.bits != query_block.bits
-                {
-                    return Err("Stored CrowQuant memory uses incompatible settings".to_string());
+        let query_vector =
+            crowquant::vectorize_text(query).map_err(|message| ToolError::MemoryOperation {
+                operation: "search".into(),
+                message,
+            })?;
+        ensure_not_cancelled(cancellation)?;
+        let query_block =
+            crowquant::quantize(&query_vector).map_err(|message| ToolError::MemoryOperation {
+                operation: "search".into(),
+                message,
+            })?;
+        ensure_not_cancelled(cancellation)?;
+        let memories =
+            self.storage
+                .list_crowquant_memories()
+                .map_err(|error| ToolError::MemoryOperation {
+                    operation: "search".into(),
+                    message: error.to_string(),
+                })?;
+        let mut hits = Vec::with_capacity(memories.len());
+        for memory in memories {
+            ensure_not_cancelled(cancellation)?;
+            let block = crowquant::deserialize(&memory.block).map_err(|message| {
+                ToolError::MemoryOperation {
+                    operation: "search".into(),
+                    message,
                 }
-                let score = crowquant::compressed_cosine(&query_block, &block)?;
-                Ok(CrowQuantSearchHit { memory, score })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+            })?;
+            if block.dimension != query_block.dimension
+                || block.seed != query_block.seed
+                || block.bits != query_block.bits
+            {
+                return Err(ToolError::MemoryOperation {
+                    operation: "search".into(),
+                    message: "Stored CrowQuant memory uses incompatible settings".into(),
+                });
+            }
+            let score = crowquant::compressed_cosine(&query_block, &block).map_err(|message| {
+                ToolError::MemoryOperation {
+                    operation: "search".into(),
+                    message,
+                }
+            })?;
+            hits.push(CrowQuantSearchHit { memory, score });
+        }
         hits.sort_by(|left, right| {
             right
                 .score
@@ -89,29 +174,23 @@ impl CrowQuantMemoryService {
 }
 
 impl MemoryBackend for CrowQuantMemoryService {
-    fn remember(&self, text: &str) -> Result<RememberedMemory, ToolError> {
-        let memory = self
-            .remember_record(text)
-            .map_err(|message| ToolError::MemoryOperation {
-                operation: "remember".into(),
-                message,
-            })?;
-        Ok(RememberedMemory {
-            id: memory.id,
-            text: memory.text,
-            created_at_ms: memory.created_at_ms,
-            original_bytes: memory.original_bytes,
-            compressed_bytes: memory.block.len() as u64,
-            algorithm: memory.algorithm,
-        })
+    fn remember(
+        &self,
+        action_id: &ActionId,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<RememberedMemory, ToolError> {
+        self.remember_agent_record(action_id, text, cancellation)
+            .map(remembered_memory)
     }
 
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<MemorySearchMatch>, ToolError> {
-        self.search_records(query, limit)
-            .map_err(|message| ToolError::MemoryOperation {
-                operation: "search".into(),
-                message,
-            })
+    fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<MemorySearchMatch>, ToolError> {
+        self.search_records_cancellable(query, limit, cancellation)
             .map(|hits| {
                 hits.into_iter()
                     .map(|hit| MemorySearchMatch {
@@ -122,6 +201,29 @@ impl MemoryBackend for CrowQuantMemoryService {
                     })
                     .collect()
             })
+    }
+}
+
+pub(crate) fn agent_memory_id(action_id: &ActionId) -> String {
+    format!("agent-action-{action_id}")
+}
+
+pub(crate) fn remembered_memory(memory: CrowQuantMemory) -> RememberedMemory {
+    RememberedMemory {
+        id: memory.id,
+        text: memory.text,
+        created_at_ms: memory.created_at_ms,
+        original_bytes: memory.original_bytes,
+        compressed_bytes: memory.block.len() as u64,
+        algorithm: memory.algorithm,
+    }
+}
+
+fn ensure_not_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
+    if cancellation.is_cancelled() {
+        Err(ToolError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -145,7 +247,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::CrowQuantMemoryService;
-    use crate::{storage::Storage, tools::MemoryBackend};
+    use crate::{
+        agent::CancellationToken,
+        storage::Storage,
+        tools::{ActionId, MemoryBackend},
+    };
 
     #[test]
     fn native_service_persists_and_ranks_crowquant_memory() {
@@ -177,7 +283,13 @@ mod tests {
         let service =
             CrowQuantMemoryService::new(Arc::new(Storage::open(directory.path()).unwrap()));
 
-        let output = service.remember("remember this locally").unwrap();
+        let output = service
+            .remember(
+                &ActionId::new(),
+                "remember this locally",
+                &CancellationToken::new(),
+            )
+            .unwrap();
         assert_eq!(output.text, "remember this locally");
         assert_eq!(output.original_bytes, 2048);
         assert!(output.compressed_bytes < output.original_bytes);

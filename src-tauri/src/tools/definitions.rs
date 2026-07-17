@@ -79,7 +79,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "search_memory".into(),
-            description: "Propose searching CrowClaw's local CrowQuant compressed lexical memory. No stored memory is read until the user approves the exact query and result limit.".into(),
+            description: "Propose ranking CrowClaw's local CrowQuant memory by compressed lexical similarity. No stored memory is read until the user approves the exact query and result limit.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -94,7 +94,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                         "minimum": 1,
                         "maximum": 20,
                         "default": 5,
-                        "description": "Maximum number of ranked memories to return"
+                        "description": "Maximum number of top-ranked results to return; no relevance threshold is applied"
                     }
                 },
                 "required": ["query"],
