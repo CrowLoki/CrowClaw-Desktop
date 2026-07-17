@@ -26,14 +26,14 @@ The exact Alpha 2 release evidence and known limitations are recorded in [`docs/
 
 ## Alpha 3 scope
 
-Alpha 3 is being prepared as the next public prerelease. Its intended scope is deliberately bounded:
+Alpha 3 has completed local packaged acceptance and is being finalized as the next public prerelease. Its scope is deliberately bounded:
 
 - let the conversational agent propose CrowQuant remember and search actions through the existing native approval gate;
 - make denial non-mutating and keep approved CrowQuant results visible to the connected model;
 - preserve stored CrowQuant memories and ranked recall across a full application restart;
 - apply CrowClaw's supplied crow branding and a black, violet, purple, and magenta desktop theme while preserving the working desktop flows.
 
-The CrowQuant chat-tool integration has a recorded pre-release installed-app acceptance receipt. The final Alpha 3 installer has **not** yet been declared accepted or published: the approval-gated tools and violet branding still require final integration, a clean Alpha 3 build, and packaged verification together. See [`docs/release-notes/v0.1.0-alpha.3.md`](docs/release-notes/v0.1.0-alpha.3.md).
+The integrated CrowQuant chat tools and violet-branded interface have passed a real installed-app acceptance run, including denial, approval, persistence, ranked recall, file approval, cancellation, settings, restart, and uninstall retention. Publication remains separate until the exact tag workflow passes and binds the public artifacts. See [`docs/release-notes/v0.1.0-alpha.3.md`](docs/release-notes/v0.1.0-alpha.3.md).
 
 This repository is intentionally independent. It does not modify or repurpose the existing SRH-HQRE, Orion, CrowMemory, CrowNest, CrowQuant, or previous CrowClaw repositories.
 
