@@ -1,6 +1,12 @@
 # CrowClaw Desktop
 
-CrowClaw is a local-first, installable Windows desktop AI agent. It is being built as a real application Crow can launch, talk to, give tasks to, close, reopen, update, repair, and uninstall without depending on a paid AI service.
+CrowClaw is Crow's original creation. CrowClaw-Desktop is its canonical public,
+non-developer edition: a local-first, installable Windows desktop AI agent with
+its own product identity, direction, and release history.
+
+It is being built as a real application Crow can launch, talk to, give tasks to,
+close, reopen, update, repair, and uninstall without depending on a paid AI
+service.
 
 The Alpha 1 baseline provides:
 

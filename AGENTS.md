@@ -1,6 +1,8 @@
 # CrowClaw operating contract
 
-CrowClaw is the only product in this repository: an installable Windows desktop AI-agent application.
+CrowClaw is Crow's original creation. This repository is the canonical public,
+non-developer CrowClaw-Desktop edition: an installable Windows desktop AI-agent
+application and the only product in this repository.
 
 ## Hard boundaries
 
