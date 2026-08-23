@@ -2,7 +2,13 @@
 
 ## Concrete product
 
-CrowClaw is a Windows desktop AI-agent application. A person installs it, launches it normally, connects a local model, chats, authorises tool actions, gives it tasks, closes it, reopens it without losing the conversation, and can update, repair, or uninstall it.
+CrowClaw is Crow's original creation. Within this repository, CrowClaw-Desktop
+is the canonical public, non-developer edition: a Windows desktop AI-agent
+application with its own product identity, direction, and release history.
+
+A person installs it, launches it normally, connects a local model, chats,
+authorises tool actions, gives it tasks, closes it, reopens it without losing
+the conversation, and can update, repair, or uninstall it.
 
 It is not a website, research explainer, command-line-only program, read-only dashboard, renamed SRH-HQRE interface, or public doorway to Orion or Crow's accounts.
 
