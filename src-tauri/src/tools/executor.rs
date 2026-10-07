@@ -850,6 +850,7 @@ mod tests {
                 text: format!("top-ranked result for {query}"),
                 created_at_ms: 1,
                 score: limit as f64 / 20.0,
+                provenance: None,
             }])
         }
     }

@@ -295,6 +295,52 @@ pub struct StorageExport {
     pub actions: Vec<ProposedAction>,
     pub action_audit: Vec<ActionAuditEvent>,
     pub crowquant_memories: Vec<CrowQuantMemory>,
+    #[serde(default)]
+    pub memory_sources: Vec<NativeMemorySource>,
+    #[serde(default)]
+    pub memory_chunks: Vec<NativeMemoryChunk>,
+    #[serde(default)]
+    pub memory_exclusions: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeMemorySource {
+    pub id: String,
+    pub logical_key: String,
+    pub source_kind: String,
+    pub origin_id: String,
+    pub title: String,
+    pub authorship: String,
+    pub content_hash: String,
+    pub snapshot: Option<String>,
+    pub state: String,
+    pub predecessor_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeMemoryChunk {
+    pub id: String,
+    pub source_id: String,
+    pub ordinal: usize,
+    pub text: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub content_hash: String,
+    pub lexical_block: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryCandidate {
+    pub source_kind: String,
+    pub origin_id: String,
+    pub title: String,
+    pub authorship: String,
+    pub text: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

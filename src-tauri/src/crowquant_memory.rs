@@ -138,6 +138,7 @@ impl CrowQuantMemoryService {
         let mut hits = Vec::with_capacity(memories.len());
         for memory in memories {
             ensure_not_cancelled(cancellation)?;
+            if self.storage.memory_crowquant_withdrawn(&memory.id).map_err(|error|ToolError::MemoryOperation {operation:"search".into(),message:error.to_string()})? { continue; }
             let block = crowquant::deserialize(&memory.block).map_err(|message| {
                 ToolError::MemoryOperation {
                     operation: "search".into(),
@@ -198,6 +199,7 @@ impl MemoryBackend for CrowQuantMemoryService {
                         text: hit.memory.text,
                         created_at_ms: hit.memory.created_at_ms,
                         score: hit.score,
+                        provenance: None,
                     })
                     .collect()
             })

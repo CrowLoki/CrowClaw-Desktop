@@ -37,6 +37,9 @@ impl Storage {
             actions: list_actions_from(&transaction, None, None)?,
             action_audit: list_action_audit_from(&transaction, None)?,
             crowquant_memories: list_crowquant_memories_from(&transaction)?,
+            memory_sources: super::memory::sources_from(&transaction)?,
+            memory_chunks: super::memory::chunks_from(&transaction)?,
+            memory_exclusions: super::memory::exclusions_from(&transaction)?,
         };
         transaction.commit()?;
         Ok(export)
@@ -76,6 +79,11 @@ impl Storage {
             DELETE FROM provider_profiles;
             DELETE FROM settings;
             DELETE FROM crowquant_memories;
+            DELETE FROM memory_chunks;
+            DELETE FROM memory_sources;
+            DELETE FROM memory_jobs;
+            DELETE FROM memory_exclusions;
+            DELETE FROM memory_job_errors;
             DELETE FROM sqlite_sequence WHERE name = 'action_audit';
             "#,
         )?;
@@ -100,7 +108,10 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM tasks) +
              (SELECT COUNT(*) FROM proposed_actions) +
              (SELECT COUNT(*) FROM action_audit) +
-             (SELECT COUNT(*) FROM crowquant_memories)"#,
+             (SELECT COUNT(*) FROM crowquant_memories) +
+             (SELECT COUNT(*) FROM memory_sources) +
+             (SELECT COUNT(*) FROM memory_chunks) +
+             (SELECT COUNT(*) FROM memory_exclusions)"#,
         [],
         |row| row.get(0),
     )?;

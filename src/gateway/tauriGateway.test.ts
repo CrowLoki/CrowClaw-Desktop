@@ -36,5 +36,16 @@ describe("Tauri command contract", () => {
       request: { query: "this", limit: 8 },
     });
   });
-});
 
+  it("sends native memory requests without granting any external-file access", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const gateway = createTauriGateway();
+    const query = { query: "telescope", limit: 5, sourceKind: "conversation_message", mode: "hybrid" as const };
+    await gateway.searchMemory(query);
+    await gateway.withdrawMemory("source-id");
+    await gateway.configureMemory({ indexConversations: false, indexActions: false });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "crowclaw_memory_search", { request: query });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "crowclaw_memory_withdraw", { request: { sourceId: "source-id" } });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "crowclaw_memory_configure", { request: { indexConversations: false, indexActions: false } });
+  });
+});

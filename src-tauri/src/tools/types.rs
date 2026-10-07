@@ -68,6 +68,7 @@ pub enum ToolRequest {
 }
 
 pub const MEMORY_TEXT_MAX_BYTES: usize = 16 * 1024;
+pub const MEMORY_QUERY_MAX_BYTES: usize = 4096;
 
 fn default_memory_search_limit() -> usize {
     5
@@ -103,7 +104,7 @@ impl ToolRequest {
                 format!("Store this text in local CrowQuant memory: {text:?}")
             }
             Self::SearchMemory { query, limit } => format!(
-                "Rank local CrowQuant memory for {query:?} and return up to {limit} top-ranked results"
+                "Search indexed CrowClaw conversations, notes, admitted files and enabled action summaries for {query:?}; return up to {limit} results"
             ),
         }
     }
@@ -195,10 +196,10 @@ impl ToolRequest {
                         message: "query cannot be empty".into(),
                     });
                 }
-                if query.len() > MEMORY_TEXT_MAX_BYTES {
+                if query.len() > MEMORY_QUERY_MAX_BYTES {
                     return Err(ToolError::InvalidRequest {
                         tool_name: tool_name.into(),
-                        message: format!("query cannot exceed {MEMORY_TEXT_MAX_BYTES} UTF-8 bytes"),
+                        message: format!("query cannot exceed {MEMORY_QUERY_MAX_BYTES} UTF-8 bytes"),
                     });
                 }
                 if !(1..=20).contains(&parsed.limit) {
@@ -314,6 +315,8 @@ pub struct MemorySearchMatch {
     pub text: String,
     pub created_at_ms: i64,
     pub score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

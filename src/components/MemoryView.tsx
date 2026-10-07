@@ -10,6 +10,7 @@ import {
   StickyNote,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { NativeMemoryPanel } from "./NativeMemoryPanel";
 import type {
   CrowClawGateway,
   CrowQuantMemory,
@@ -18,6 +19,7 @@ import type {
 } from "../gateway/contracts";
 
 type MemoryViewProps = {
+  gateway: CrowClawGateway;
   memories: MemoryRecord[];
   listCrowQuantMemories: CrowClawGateway["listCrowQuantMemories"];
   rememberCrowQuant: CrowClawGateway["rememberCrowQuant"];
@@ -56,6 +58,7 @@ function memoryFromHit(hit: CrowQuantSearchHit): CrowQuantMemory {
 }
 
 export function MemoryView({
+  gateway,
   memories,
   listCrowQuantMemories,
   rememberCrowQuant,
@@ -156,6 +159,8 @@ export function MemoryView({
         </div>
         <span className="section-stat"><Brain size={18} /> {crowQuantMemories.length + memories.length} records</span>
       </header>
+
+      <NativeMemoryPanel gateway={gateway} />
 
       <section className="crowquant-panel" aria-labelledby="crowquant-heading">
         <header className="crowquant-panel__heading">
@@ -286,6 +291,10 @@ export function MemoryView({
                 <p>{memory.preview}</p>
                 <div className="tag-row">{memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
                 <time dateTime={memory.createdAt}><Clock3 size={13} /> {formatMemoryDate(memory.createdAt)}</time>
+                {memory.tags.includes("read_text_file") && <button type="button" className="button button--secondary" onClick={() => {
+                  setCrowQuantError(null);
+                  void gateway.admitFileMemory(memory.id.replace(/^memory-/, "")).then(() => setCrowQuantNotice("The exact approved file result was remembered locally.")).catch(cause => setCrowQuantError(cause instanceof Error ? cause.message : String(cause)));
+                }}>Remember this approved file content</button>}
               </article>
             ))}
           </div>

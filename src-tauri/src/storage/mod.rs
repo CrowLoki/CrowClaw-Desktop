@@ -3,6 +3,7 @@ mod conversations;
 mod crowquant;
 mod error;
 mod migrations;
+mod memory;
 mod models;
 mod retention;
 mod settings;

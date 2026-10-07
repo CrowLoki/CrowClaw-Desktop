@@ -62,6 +62,7 @@ export function Onboarding({ discoverEndpoints, testConnection, connect }: Onboa
           <li><Check size={16} /> No paid service required</li>
           <li><LockKeyhole size={16} /> Actions wait for your approval</li>
           <li><MonitorCog size={16} /> Change providers whenever you want</li>
+          <li><Check size={16} /> Saved conversations are searchable locally; control indexing in Memory</li>
         </ul>
       </section>
 
@@ -87,4 +88,3 @@ export function Onboarding({ discoverEndpoints, testConnection, connect }: Onboa
     </main>
   );
 }
-

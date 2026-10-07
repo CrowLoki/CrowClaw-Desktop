@@ -1,6 +1,6 @@
 # Native CrowClaw Memory Foundation — Design Specification
 
-**Status:** Proposed for Crow's review
+**Status:** Approved for implementation by Crow's instruction to proceed; implementation plan linked below
 
 **Date:** 2026-10-08
 
@@ -613,7 +613,8 @@ against this product-specific specification and its own test evidence.
 
 ## 20. Review decision
 
-Approval of this written specification authorizes creation of the detailed
-implementation plan. Implementation begins only from that plan and remains on
-the isolated `codex/native-memory-foundation` branch until verified and
+Crow approved the direction and instructed implementation to proceed, then
+confirmed the target is CrowClaw-Desktop. The executable plan and current
+checkpoint are in [the implementation plan](../plans/2026-10-08-native-memory-foundation.md).
+Implementation remains on `codex/native-memory-foundation` until verified and
 delivered through the repository's normal review workflow.

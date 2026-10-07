@@ -126,6 +126,18 @@ export type CrowQuantSearchHit = {
 
 export type PermissionMode = "ask" | "allow-session" | "deny";
 
+export type MemorySettings = { indexConversations: boolean | null; indexActions: boolean };
+export type MemorySearchMode = "hybrid" | "full_text" | "lexical";
+export type MemoryQuery = { query: string; limit: number; sourceKind: string | null; mode: MemorySearchMode };
+export type NativeMemoryHit = {
+  chunkId: string; sourceId: string; sourceKind: string; originId: string; title: string;
+  authorship: string; text: string; createdAtMs: number; startByte: number; endByte: number;
+  score: number; channels: Array<{ channel: string; rank: number; score: number | null }>;
+};
+export type MemorySearchResult = { hits: NativeMemoryHit[]; mode: MemorySearchMode; warnings: string[] };
+export type NativeMemoryStatus = { settings: MemorySettings; activeSources: number; chunks: number; pending: number; warnings: string[] };
+export type MemoryIndexReport = { indexed: number; skipped: number; pending: number; warnings: string[] };
+
 export type AppSettings = {
   permissions: {
     readFiles: PermissionMode;
@@ -190,4 +202,12 @@ export interface CrowClawGateway {
   listCrowQuantMemories(): Promise<CrowQuantMemory[]>;
   rememberCrowQuant(text: string): Promise<CrowQuantMemory>;
   recallCrowQuant(query: string, limit: number): Promise<CrowQuantSearchHit[]>;
+  memoryStatus(): Promise<NativeMemoryStatus>;
+  configureMemory(settings: MemorySettings): Promise<MemorySettings>;
+  searchMemory(query: MemoryQuery): Promise<MemorySearchResult>;
+  withdrawMemory(sourceId: string): Promise<void>;
+  syncMemory(): Promise<MemoryIndexReport>;
+  rebuildMemory(): Promise<MemoryIndexReport>;
+  exportMemory(): Promise<unknown>;
+  admitFileMemory(actionId: string): Promise<unknown>;
 }
