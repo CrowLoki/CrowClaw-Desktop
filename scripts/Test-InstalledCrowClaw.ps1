@@ -16,6 +16,7 @@ if (-not $IsWindows -or $PSVersionTable.PSVersion.Major -lt 7 -or
     $env:RUNNER_OS -cne 'Windows' -or [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     throw 'Installed acceptance requires a fresh GitHub-hosted Windows runner and PowerShell 7.'
 }
+. (Join-Path $PSScriptRoot 'InstallerIdentity.ps1')
 
 $qaRepository = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $qaRegistration = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowClaw'
@@ -155,9 +156,13 @@ try {
     if ($qaReg.DisplayVersion -ne $ExpectedVersion -or $qaReg.InstallLocation.Trim('"') -ne $qaInstall) {
         throw 'Installed registration does not identify the candidate.'
     }
-    if ((Get-FileHash -LiteralPath $qaExecutable -Algorithm SHA256).Hash -ne $ExpectedExecutableSha256) {
+    $qaInstalledHash = (Get-FileHash -LiteralPath $qaExecutable -Algorithm SHA256).Hash
+    $qaChecks.installedExecutableHash = $qaInstalledHash
+    $qaNormalizedHash = if ($qaInstalledHash -eq $ExpectedExecutableSha256) { $qaInstalledHash } else { Get-CrowClawNormalizedNsisHash ([IO.File]::ReadAllBytes($qaExecutable)) }
+    if ($qaNormalizedHash -ne $ExpectedExecutableSha256) {
         throw 'Installed executable differs from the built executable.'
     }
+    $qaChecks.normalizedExecutableMatchesBuild = $true
     $qaChecks.installedIdentity = $true
 
     $qaOldModelPort = $env:CROWCLAW_TEST_PORT
@@ -169,7 +174,7 @@ try {
     Start-InstalledApp
     Invoke-NativeUi @('run-code', 'async (page) => { await page.getByRole("heading",{name:/Your local agent/}).waitFor(); await page.getByText("Looking locally",{exact:true}).waitFor({state:"hidden"}); await page.getByText("Custom",{selector:"strong",exact:true}).click(); await page.getByLabel("Endpoint URL",{exact:true}).fill("http://127.0.0.1:32123/v1"); await page.getByLabel("Connection name",{exact:true}).fill("Installed acceptance model"); await page.getByLabel("Model name",{exact:true}).fill("crowclaw-acceptance-model"); await page.getByRole("button",{name:"Test connection",exact:true}).click(); await page.getByRole("button",{name:"Connect and open CrowClaw",exact:true}).click({timeout:20000}); await page.getByRole("navigation",{name:"CrowClaw sections",exact:true}).waitFor(); }')
     $qaChecks.startMenuAndOnboarding = $true
-    Invoke-NativeUi @('run-code', 'async (page) => { for(const text of ["CI telescope baseline", "CI recipe baseline"]) { await page.getByRole("button",{name:"New conversation",exact:true}).click(); await page.getByRole("textbox",{name:"Message CrowClaw",exact:true}).fill(text); await page.getByRole("button",{name:"Send message",exact:true}).click(); await page.getByRole("main").getByText("CrowClaw acceptance response: " + text,{exact:true}).waitFor({timeout:20000}); } await page.getByRole("button",{name:"Memory",exact:true}).click(); for(const note of ["CI native telescope cobalt record", "CI native garden tulip record"]) { await page.getByRole("textbox",{name:"Remember something",exact:true}).fill(note); await page.getByRole("button",{name:"Remember with CrowQuant",exact:true}).click(); await page.getByText(note,{exact:true}).waitFor(); } }')
+    Invoke-NativeUi @('run-code', 'async (page) => { for(const text of ["CI telescope baseline", "CI recipe baseline"]) { await page.getByRole("button",{name:"New conversation",exact:true}).click(); await page.waitForFunction(() => { const button=document.querySelector("[aria-label=\"New conversation\"]"); return button && !button.disabled; }); await page.getByRole("main").getByRole("heading",{name:"New conversation",exact:true}).waitFor(); await page.getByRole("textbox",{name:"Message CrowClaw",exact:true}).fill(text); await page.getByRole("button",{name:"Send message",exact:true}).click(); await page.getByRole("main").getByText("CrowClaw acceptance response: " + text,{exact:true}).waitFor({timeout:20000}); } await page.getByRole("button",{name:"Memory",exact:true}).click(); for(const note of ["CI native telescope cobalt record", "CI native garden tulip record"]) { await page.getByRole("textbox",{name:"Remember something",exact:true}).fill(note); await page.getByRole("button",{name:"Remember with CrowQuant",exact:true}).click(); await page.getByText(note,{exact:true}).waitFor(); } }')
     Assert-InstalledContext
     $qaChecks.twoConversationsAndLocalNotes = $true
     Invoke-NativeUi @('screenshot', '--filename=output/playwright/installed-memory.png')
