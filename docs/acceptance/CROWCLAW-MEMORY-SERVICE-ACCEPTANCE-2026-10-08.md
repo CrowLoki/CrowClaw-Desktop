@@ -290,6 +290,60 @@ retroactively prove this expanded export payload in the installed app.
 
 ### Still requiring product acceptance
 
+### Hosted launch follow-up and upgrade verification
+
+[Run 37651817821](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37651817821)
+tested `c24ae4c4b790513e8dc23b6f71243aa40fa8defb`. Its normal Rust gate passed
+111 tests. Build, installation, registry identity and normalized executable
+identity passed. The native UI driver then timed out waiting for CDP on 9227;
+no UI or uninstall pass is claimed. The job log and failure annotation were read.
+The fixture receipt binds these SHA-256 values:
+
+- installer: `bea4314e727cde804419e35f4bb56992af61d5a7683780d0c2791da8bfd957ed`;
+- unbundled executable: `1d19d48561ba3b23903bdb32b00857bbc6bb4630e3f5b1c90ef0375e4a6ab6ca`;
+- installed executable: `2db98b4017a222b64319ccfc392c3eebc4a5dac26bde6f057fa23604f2f18b7b`.
+
+A local two-mode probe launched the previously verified diagnostic executable
+through a private shortcut and directly, each with a new synthetic profile.
+Both showed the WebView debugging flag and the onboarding accessibility element;
+both were closed. No installer registration was changed, and all three normal
+database hashes still matched. This disproves a universal shortcut-inheritance
+failure; the hosted cause remains unconfirmed.
+
+The driver now keeps normal shortcut/UI proof separate from explicit child-process
+CDP setup. Only the automation browser cache is isolated; SQLite uses the normal
+installed-app profile. This follows the supported [WebView2 automation boundary](https://playwright.dev/docs/webview2)
+and explicit [.NET child-environment handling](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.environment).
+Failure receipts record app exit/window state, owned process names and whether
+the WebView debug flag was present, without dumping command lines or credentials.
+
+Fresh installation and upgrade are distinct matrix entries on separate clean
+hosted runners, using one exact built artifact. The upgrade baseline is published
+Alpha 3 source `7874429d0316667584589e40213e91cc2e210f8d`, installer SHA-256
+`c46b2e646410bbb620a20fb94ae743d1538d9093aaf6b043b6bab58b578feb74`, verified against
+its published manifest and downloaded bytes. The baseline download token is not
+present in the application-launch step. A tag-only publication job depends on
+both acceptance modes; manual runs cannot publish releases.
+
+The upgrade receipt hashes all canonical conversation/message/note fields, with
+integer-to-text conversion before JavaScript to preserve 64-bit values. Tests
+detect changed ordering, metadata, IDs, compressed blocks and seeds, while allowing
+the derived schema version to advance. UI checks positively inspect both threads,
+both notes and the original user-message search result. Only the upgrade-consent
+phase may click the indexing choice; a repeated prompt on restart fails.
+
+Uninstall uses normal NSIS self-removal and waits for both executables, registration
+and shortcuts to disappear before comparing retained database hashes. It does not
+manually delete leftovers to manufacture a pass. See the [NSIS command-line contract](https://nsis.sourceforge.io/Docs/Chapter3.html).
+
+Local verification: 18 frontend tests, 2 Node verification-tooling tests, frontend
+build, installer identity fixtures, embedded-JavaScript/PowerShell syntax, local
+execution refusal, and actionlint 1.7.12 all pass. The new hosted launch and upgrade
+paths still require execution; these preparation results are not installed-app
+acceptance. The independent harness review was integrated and closed.
+
+### Outstanding acceptance
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source
