@@ -117,8 +117,12 @@ function Set-DriverBrowserPolicy([string]$Arguments, [string]$DataFolder) {
         }
     }
     foreach ($qaPolicy in $qaPolicies.Keys) {
-        $qaPolicyPath = "HKLM:\Software\Policies\Microsoft\Edge\WebView2\$qaPolicy"
-        New-Item -Path $qaPolicyPath -Force | Out-Null
+        $qaPolicyPath = 'HKLM:\Software\Policies\Microsoft'
+        foreach ($qaSegment in @('Edge', 'WebView2', $qaPolicy)) {
+            $qaPolicyPath += "\$qaSegment"
+            # Registry -Force can erase an existing key, including other apps.
+            if (-not (Test-Path -LiteralPath $qaPolicyPath)) { New-Item -Path $qaPolicyPath | Out-Null }
+        }
         # Record ownership before the write so a partial failure is cleaned up too.
         $script:qaDriverPolicy += @{ Path = $qaPolicyPath; Value = $qaPolicies[$qaPolicy] }
         New-ItemProperty -LiteralPath $qaPolicyPath -Name 'crowclaw-desktop.exe' -PropertyType String -Value $qaPolicies[$qaPolicy] | Out-Null

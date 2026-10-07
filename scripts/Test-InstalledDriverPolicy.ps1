@@ -21,7 +21,9 @@ $qaBase = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2'
 function Test-Path([string]$LiteralPath) { $qaRegistry.ContainsKey($LiteralPath) }
 function Get-ItemProperty([string]$LiteralPath) { [pscustomobject]$qaRegistry[$LiteralPath] }
 function New-Item([string]$Path, [switch]$Force) {
-    if (-not $qaRegistry.ContainsKey($Path)) { $qaRegistry[$Path] = @{} }
+    # Registry New-Item -Force empties an existing key, unlike a directory.
+    if ($qaRegistry.ContainsKey($Path) -and -not $Force) { throw 'Registry key already exists.' }
+    $qaRegistry[$Path] = @{}
 }
 function New-ItemProperty([string]$LiteralPath, [string]$Name, [string]$PropertyType, [string]$Value) {
     if (-not $LiteralPath.StartsWith($qaBase + '\') -or $Name -ne 'crowclaw-desktop.exe' -or $PropertyType -ne 'String') { throw 'Policy write escaped the app-specific scope.' }
