@@ -1,10 +1,42 @@
 # Native memory service acceptance — 2026-10-08
 
-This receipt covers the native memory service, its desktop command contracts,
-and an actual local embedding model. It does not claim that the installed
-Windows UI or installer has completed acceptance.
+This receipt covers native-service, local-model, native-UI and installed lifecycle
+evidence. Earlier sections below retain the historical checkpoints; the current
+result supersedes their pending basic installer/upgrade status, not their explicitly
+separate release-boundary limitations.
 
-## Source and protocol boundary
+## Current verified result
+
+[Run 37701777105](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37701777105)
+completed successfully on source `277fd3738ba489c71cf7fd9e8f515c7910bb8bb8`.
+The build, fresh-install and Alpha 3 upgrade jobs each passed with zero annotations.
+The logs confirm 111 Rust tests, 21 frontend tests, two verification-tooling tests,
+installer-identity/policy fixtures, production builds and zero dependency advisories.
+
+Both independent installed runners tested the same installer SHA-256
+`08be67bb93cd31f2f838c43e95ec836ab6ad120b046f757871146f7251b94156` and installed
+executable SHA-256 `8F9B8D6C960D3632F5D949925FB5C6D15A6D64CF904BAB67018D0384D0E814D7`.
+They passed normal shortcut/onboarding, two conversations and two notes, keyword
+recall with authorship labels, complete close/restart with the model fixture stopped,
+native-only process ownership, and normal uninstall with database files retained
+unchanged. Test-only driver policy was removed; no installation remained on either
+disposable runner. Screenshots from both offline restarts were visually inspected.
+
+The upgrade moved schema 2 to 5 with identical canonical conversation/message/note
+digest `4e7178ebc5780b4e59c1e668cbeda7672e75edf4c37a23686e5fb8758df1bd4b`, preserving
+two conversations, four messages and two compressed notes. Indexing consent was
+explicit and persisted. Other Crow checkouts were absent from these hosted runners.
+The release-publication job was correctly skipped for the manual run.
+
+The draft-preservation executable also passed the same real native UI/Windows CMD
+driver flow locally, SHA-256
+`6C0EF2FB140527B331FD9CFFF5A0031AB7178DE8FF80130130E2783DE7B6947F`.
+It and the model fixture are stopped. Crow's normal Alpha 3 database/WAL/SHM hashes
+remain unchanged. Source delivery is tracked in [PR #3](https://github.com/CrowLoki/CrowClaw-Desktop/pull/3).
+No tag, public installer release, production signing or local installed-app update
+is established by this receipt.
+
+## Source and protocol boundary at the initial checkpoint
 
 - Branch: `codex/native-memory-foundation`.
 - Previous source checkpoint: `d19a14aeb5a18188aebb1e0d53e60c1f3b0add47`.
@@ -27,7 +59,7 @@ Only their local-compatible protocol shapes are used; the native adapter
 rejects remote hosts, URL credentials, query parameters, proxy routing and
 redirects. Localhost is pinned to loopback while preserving its TLS hostname.
 
-## Fresh automated evidence
+## Initial source-checkpoint tests
 
 `cargo test --manifest-path src-tauri/Cargo.toml --locked` passed:
 
@@ -435,13 +467,13 @@ or retry masking the race. The corrected packaged candidate still needs both mod
 - Reconcile remaining native model-connectivity evidence with the isolated
   host-port behavior; preserve explicit degraded/offline behavior and never
   weaken host security controls as a product workaround.
-- Complete the clean installed-profile matrix (including separate conversations
-  and full runtime-dependency isolation). This host was not disconnected from
-  external networking, and other checkouts were not hidden/moved.
-- Installed upgrade and installer/uninstaller acceptance with the other Crow
-  repositories unavailable. The NSIS candidate was built but not installed;
-  existing Alpha 3 registration and shortcuts were preserved.
-- Release artifact binding, review and GitHub delivery.
+- The current hosted matrix now proves the basic installed memory lifecycle,
+  upgrade, native process tree and uninstall with donor checkouts absent. It does
+  not prove external-network disconnection or every design section 16.4 journey.
+- Complete the remaining packaged agent-approval, semantic, withdrawal and export
+  journeys before claiming full release acceptance. Their service/native-executable
+  evidence above is not silently promoted to the exact installed artifact.
+- Public release/tag and signing/licensing decisions remain separate.
 - The wider approved standalone roadmap, including God mode.
 
 Source and local-model evidence alone do not satisfy these remaining gates.

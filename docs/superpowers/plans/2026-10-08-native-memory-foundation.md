@@ -69,13 +69,13 @@ Files: new `memory/embedding.rs`, vector persistence and profile contracts; Memo
 - [x] Benchmark the chosen scan bound without claiming results outside the measured workload.
 - [ ] Build the installer and exercise design section 16.4 against a clean profile with donor checkouts unavailable; preserve installed user data.
 - [x] Record exact passing/failing source, packaged, restart, migration and semantic gates in this checkpoint.
-- [ ] Review the branch, deliver through the existing GitHub workflow using Crow's saved settings, and continue the agreed standalone roadmap from merged source.
+- [x] Review the branch and deliver the verified source/receipts through PR #3 using Crow's saved settings; its linked GitHub record owns integration status.
 
 ## Current checkpoint
 
 2026-10-08: Crow confirmed the goal is to finish CrowClaw-Desktop and requested God mode integration too. Tasks 1–3 are implemented on `codex/native-memory-foundation`: native source/index storage and controls, approved agent recall, plus optional local embeddings with schema 5, profile isolation, offline fallback and cancellation. A failed-upgrade regression proves that all intermediate schema changes roll back together while original messages/CrowQuant bytes survive. The actual installed Qwen3 Embedding 0.6B model passed native paraphrase/restart acceptance using synthetic notes and a disposable database; no download or private corpus was used. Exact boundaries and superseded test checkpoints are retained in [the service acceptance receipt](../../acceptance/CROWCLAW-MEMORY-SERVICE-ACCEPTANCE-2026-10-08.md).
 
-This is a source/local-model checkpoint, not installed-app or release acceptance. Native UI acceptance has now exercised the actual Alpha 4 release executable in its separate profile: note approval/denial, memory search approval/denial, source-filtered semantic recall, native folder selection, separate directory/file approvals, actual fixture-file content, and cancellation from Tasks. Browser-blob export failed in WebView2; it has been replaced in source with a native Save dialog and atomic file publication. Status now refreshes while background indexing runs without loading every stored chunk just to count it.
+Current evidence includes passing source/local-model, native-executable and basic installed-memory lifecycle checks. It is not full release acceptance. Native UI acceptance exercised the actual Alpha 4 executable in its separate profile: note approval/denial, memory search approval/denial, source-filtered semantic recall, native folder selection, separate directory/file approvals, actual fixture-file content, and cancellation from Tasks. Browser-blob export failed in WebView2; it was replaced with a native Save dialog and atomic file publication. Status refreshes while background indexing runs without loading every stored chunk just to count it.
 
 Current source checks: 21 frontend tests, production frontend build and dependency audit (zero advisories) pass. The latest normal Rust run passes 111 tests, without serial flags or global fixture serialization. Local transport diagnostics reproduced failures outside the app on one port range with HTTP, async TCP and ordinary blocking TCP; a control range passed. Host networking/policy settings were inspected read-only and left unchanged. The fresh hosted Windows run also passed the normal suite. Do not change security controls or force test ports/serial retries to conceal the local behavior.
 
@@ -95,18 +95,16 @@ The latest local release executable was rebuilt with schema 5 and passed native 
 
 Run [37699937792](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37699937792) on `badac23` passed the build and the complete Alpha 3 upgrade lifecycle: schema 2 to 5 with identical canonical data, explicit consent, two conversations/notes, source labels, offline restart, native-only process tree, uninstall retaining data and policy cleanup. Build/upgrade annotations were empty. Fresh acceptance found a separate note-entry race: a completed save could clear the next draft entered while it was pending. A deterministic deferred-save frontend regression failed before the fix. MemoryView now clears only the submitted draft, preserving newer text; all 21 frontend tests and the production build pass. The test's note checkpoint now requires a saved card rather than matching editable textarea content. Fresh installed acceptance of this repair remains pending.
 
-Next unfinished action: verify the repaired native UI and rerun both installed modes against its packaged candidate, including annotations and receipts. PR [#3](https://github.com/CrowLoki/CrowClaw-Desktop/pull/3) is open and ready, not merged. The workflow builds one candidate and tests the same artifact on two separate fresh hosted runners; publication is a tag-only downstream job requiring both results. The upgrade baseline is the hash-pinned published Alpha 3 installer. The harness refuses local execution and pre-existing CrowClaw state. Local `.test-runtime/hosted-acceptance-state.json` records the live run when dispatched; revalidate it with GitHub. Alpha 4 notes still block publication. No local installer ran, and all normal Alpha 3 database hashes remained unchanged. Main and the old dependency-security worktree remain untouched. God mode and the wider standalone roadmap remain in scope after memory delivery.
+Verified stopping point: [run 37701777105](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37701777105) passed on `277fd37`. Build, fresh-install and Alpha 3 upgrade all passed with zero annotations. Both modes proved two conversations/notes, source-labelled keyword recall, offline restart, the native-only process tree and normal uninstall with retained data. The upgrade preserved the exact canonical digest across schema 2 to 5. Both used the same installer; exact hashes and screenshots are bound in the existing acceptance receipt. A local native fresh-profile/restart run also passed the corrected note UI, and all normal Alpha 3 database hashes remain unchanged. No local installer ran.
 
-Native acceptance preparation: the candidate is version `0.1.0-alpha.4` and
-supports explicit `--profile-dir` isolation for both SQLite and WebView data.
-Four startup tests pass, including rejection of invalid paths without falling
-back to the normal profile. The 10,000-record native benchmark passed; measured
-times are in the acceptance receipt. Alpha 3 is installed on this host, so do
-not replace its installer registration or open its normal database during the
-candidate test. Build the candidate, exercise its actual WebView against a
-separate profile, then determine the remaining installer-lifecycle gate from
-the available isolated environment. Normal database hashes were captured
-locally before testing.
+Source integration is tracked in [PR #3](https://github.com/CrowLoki/CrowClaw-Desktop/pull/3); use its merged source before the next capability slice and preserve historical branches/uncommitted work. Next unfinished product work is the approved standalone roadmap below, plus the remaining full packaged journeys in design section 16.4 before any release claim. Basic installed lifecycle success is not substituted for packaged agent-approval, semantic, withdrawal/export or external-network-disconnection evidence. Alpha 4 release notes still block publication. The old dependency-security worktree and Crow's installed Alpha 3 remain untouched. God mode remains outstanding in the full app goal.
+
+Verification boundary: the candidate is version `0.1.0-alpha.4` and supports
+explicit `--profile-dir` isolation for SQLite and WebView data. Startup rejection
+and the 10,000-record native benchmark passed; exact evidence is in the receipt.
+Alpha 3 remains installed on Crow's host. Do not replace its registration or open
+its normal database merely to repeat candidate verification; use an isolated
+profile and the hosted installer lifecycle as already established.
 
 ## Next standalone capability slices
 
