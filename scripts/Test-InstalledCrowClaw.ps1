@@ -364,7 +364,26 @@ function Start-ModelFixture {
 function Initialize-InstalledProfile {
     Invoke-NativeUi @('run-code', 'async (page) => { await page.getByRole("heading",{name:/Your local agent/}).waitFor(); await page.getByText("Looking locally",{exact:true}).waitFor({state:"hidden"}); await page.getByText("Custom",{selector:"strong",exact:true}).click(); await page.getByLabel("Endpoint URL",{exact:true}).fill("http://127.0.0.1:32123/v1"); await page.getByLabel("Connection name",{exact:true}).fill("Installed acceptance model"); await page.getByLabel("Model name",{exact:true}).fill("crowclaw-acceptance-model"); await page.getByRole("button",{name:"Test connection",exact:true}).click(); await page.getByRole("button",{name:"Connect and open CrowClaw",exact:true}).click({timeout:20000}); await page.getByRole("navigation",{name:"CrowClaw sections",exact:true}).waitFor(); }')
     $script:qaChecks.startMenuAndOnboarding = $true
-    Invoke-NativeUi @('run-code', 'async (page) => { for(const text of ["CI telescope baseline", "CI recipe baseline"]) { await page.getByRole("button",{name:"New conversation",exact:true}).click(); await page.waitForFunction(() => { const button=document.querySelector("[aria-label=\"New conversation\"]"); return button && !button.disabled; }); await page.getByRole("main").getByRole("heading",{name:"New conversation",exact:true}).waitFor(); await page.getByRole("textbox",{name:"Message CrowClaw",exact:true}).fill(text); await page.getByRole("button",{name:"Send message",exact:true}).click(); await page.getByRole("main").getByText("CrowClaw acceptance response: " + text,{exact:true}).waitFor({timeout:20000}); } await page.getByRole("button",{name:"Memory",exact:true}).click(); for(const note of ["CI native telescope cobalt record", "CI native garden tulip record"]) { await page.getByRole("textbox",{name:"Remember something",exact:true}).fill(note); await page.getByRole("button",{name:"Remember with CrowQuant",exact:true}).click(); await page.getByText(note,{exact:true}).waitFor(); } }')
+    $qaSeedProgram = @'
+async (page) => {
+  for (const text of ["CI telescope baseline", "CI recipe baseline"]) {
+    await page.getByRole("button", {name:"New conversation",exact:true}).click();
+    await page.waitForFunction(() => { const button=document.querySelector('[aria-label="New conversation"]'); return button && !button.disabled; });
+    await page.getByRole("main").getByRole("heading", {name:"New conversation",exact:true}).waitFor();
+    await page.getByRole("textbox", {name:"Message CrowClaw",exact:true}).fill(text);
+    await page.getByRole("button", {name:"Send message",exact:true}).click();
+    await page.getByRole("main").getByText("CrowClaw acceptance response: " + text, {exact:true}).waitFor({timeout:20000});
+  }
+  await page.getByRole("button", {name:"Memory",exact:true}).click();
+  for (const note of ["CI native telescope cobalt record", "CI native garden tulip record"]) {
+    await page.getByRole("textbox", {name:"Remember something",exact:true}).fill(note);
+    await page.getByRole("button", {name:"Remember with CrowQuant",exact:true}).click();
+    // A textarea's text is not proof that the note has been durably saved.
+    await page.locator("article.crowquant-card").getByText(note, {exact:true}).waitFor();
+  }
+}
+'@
+    Invoke-NativeUi @('run-code', $qaSeedProgram)
 }
 
 function Get-CanonicalReceipt {

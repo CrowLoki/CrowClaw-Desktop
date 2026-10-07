@@ -109,7 +109,8 @@ export function MemoryView({
 
   async function handleRemember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const text = rememberText.trim();
+    const submittedDraft = rememberText;
+    const text = submittedDraft.trim();
     if (!text || remembering) return;
     setRemembering(true);
     setCrowQuantError(null);
@@ -118,7 +119,8 @@ export function MemoryView({
       const memory = await rememberCrowQuant(text);
       setCrowQuantMemories((current) => [memory, ...current.filter(({ id }) => id !== memory.id)]);
       setRecallResults(null);
-      setRememberText("");
+      // A completed save owns its submitted draft, not text typed afterward.
+      setRememberText((current) => current === submittedDraft ? "" : current);
       setCrowQuantNotice("Stored locally with CrowQuant.");
     } catch (cause) {
       setCrowQuantError(cause instanceof Error ? cause.message : "CrowQuant could not store that memory.");

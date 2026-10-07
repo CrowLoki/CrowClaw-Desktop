@@ -407,6 +407,26 @@ rerun remains required.
 
 ### Remaining acceptance boundaries
 
+Run [37699937792](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37699937792)
+on `badac23` passed build and upgrade acceptance. Both held the candidate installer
+SHA-256 `955f7a83ab8394e5da7fc1b3d41cac97c395e21174de445591d9e82a7890e598`;
+installed executable SHA-256 was
+`13DE510391F1E4AFCE1BEBDF332D4EC951695FA65DA598135993FD35F30B5AB5`.
+The upgrade receipt preserves the exact same canonical digest across schema 2 to 5:
+`cf9864698e2db40481d5892878a7dea7b346eb4b8ce82615ee162b12af1ec247`.
+It passed normal shortcuts for both versions, indexing consent, two conversations,
+two notes, provenance, offline restart, native-only process tree, normal uninstall
+with retained data, and test-policy cleanup. Build and upgrade annotations were empty.
+
+Fresh acceptance failed while entering the next note: the submit button stayed
+disabled after an earlier save cleared the newer draft. The log/annotation were
+inspected, and a deterministic deferred-save regression reproduced the lost input.
+The app now clears only the draft belonging to the completed save. Newer edits and
+failed-save text are retained; 21 frontend tests and the production build pass.
+The harness also waits for a saved note card, not editable textarea text, as proof
+of storage. This is an app correction plus a stronger test assertion, not a delay
+or retry masking the race. The corrected packaged candidate still needs both modes.
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source
