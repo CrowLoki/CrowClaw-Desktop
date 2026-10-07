@@ -71,7 +71,7 @@ impl Storage {
     }
 
     pub fn memory_pending(&self, conversations: bool, actions: bool) -> StorageResult<usize> {
-        Ok(self.connection()?.query_row("SELECT count(*) FROM memory_jobs WHERE (source_kind='conversation_message' AND ?1) OR (source_kind='approved_action' AND ?2) OR source_kind IN ('legacy_crowquant','user_note')", params![conversations,actions], |r| r.get::<_,u32>(0))? as usize)
+        Ok(self.connection()?.query_row("SELECT count(*) FROM memory_jobs WHERE (source_kind='conversation_message' AND ?1) OR (source_kind='approved_action' AND ?2) OR source_kind IN ('legacy_crowquant','user_note','approved_file')", params![conversations,actions], |r| r.get::<_,u32>(0))? as usize)
     }
 
     pub fn memory_jobs(
@@ -81,7 +81,7 @@ impl Storage {
         limit: usize,
     ) -> StorageResult<Vec<(String, String)>> {
         let connection = self.connection()?;
-        let mut stmt = connection.prepare("SELECT j.source_kind,j.origin_id FROM memory_jobs j WHERE ((j.source_kind='conversation_message' AND ?1) OR (j.source_kind='approved_action' AND ?2) OR j.source_kind IN ('legacy_crowquant','user_note')) AND NOT EXISTS(SELECT 1 FROM memory_job_errors e WHERE e.source_kind=j.source_kind AND e.origin_id=j.origin_id AND e.attempts>=3) ORDER BY j.source_kind,j.origin_id LIMIT ?3")?;
+        let mut stmt = connection.prepare("SELECT j.source_kind,j.origin_id FROM memory_jobs j WHERE ((j.source_kind='conversation_message' AND ?1) OR (j.source_kind='approved_action' AND ?2) OR j.source_kind IN ('legacy_crowquant','user_note','approved_file')) AND NOT EXISTS(SELECT 1 FROM memory_job_errors e WHERE e.source_kind=j.source_kind AND e.origin_id=j.origin_id AND e.attempts>=3) ORDER BY j.source_kind,j.origin_id LIMIT ?3")?;
         let rows = stmt.query_map(params![conversations, actions, sql_integer(limit)?], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
@@ -93,7 +93,7 @@ impl Storage {
         let sql = match kind {
             "conversation_message" => "SELECT 'conversation_message',m.id,c.title,m.role,m.content,m.created_at_ms FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=?1",
             "approved_action" => "SELECT 'approved_action',id,tool_name,'tool',summary,created_at_ms FROM proposed_actions WHERE id=?1 AND status='succeeded' AND tool_name NOT IN ('remember_memory','search_memory')",
-            "legacy_crowquant" | "user_note" => "SELECT coalesce((SELECT source_kind FROM memory_sources WHERE origin_id=q.id AND source_kind IN ('legacy_crowquant','user_note') ORDER BY created_at_ms LIMIT 1),'legacy_crowquant'),q.id,'Remembered note',coalesce((SELECT authorship FROM memory_sources WHERE origin_id=q.id AND source_kind IN ('legacy_crowquant','user_note') ORDER BY created_at_ms LIMIT 1),CASE WHEN q.id LIKE 'agent-action-%' THEN 'assistant' ELSE 'user' END),q.text,q.created_at_ms FROM crowquant_memories q WHERE q.id=?1",
+            "legacy_crowquant" | "user_note" => "SELECT coalesce((SELECT source_kind FROM memory_sources WHERE origin_id=q.id AND source_kind IN ('legacy_crowquant','user_note') ORDER BY CASE source_kind WHEN 'user_note' THEN 0 ELSE 1 END,created_at_ms LIMIT 1),'legacy_crowquant'),q.id,coalesce((SELECT title FROM memory_sources WHERE origin_id=q.id AND source_kind IN ('legacy_crowquant','user_note') ORDER BY CASE source_kind WHEN 'user_note' THEN 0 ELSE 1 END,created_at_ms LIMIT 1),'Remembered note'),coalesce((SELECT authorship FROM memory_sources WHERE origin_id=q.id AND source_kind IN ('legacy_crowquant','user_note') ORDER BY CASE source_kind WHEN 'user_note' THEN 0 ELSE 1 END,created_at_ms LIMIT 1),CASE WHEN q.id LIKE 'agent-action-%' THEN 'assistant' ELSE 'user' END),q.text,q.created_at_ms FROM crowquant_memories q WHERE q.id=?1",
             _ => return Err(StorageError::InvalidData("Unsupported memory source kind".into())),
         };
         Ok(connection
@@ -116,6 +116,14 @@ impl Storage {
             [key],
             |r| r.get(0),
         )?)
+    }
+
+    pub(crate) fn memory_file_source(
+        &self,
+        origin_id: &str,
+    ) -> StorageResult<Option<NativeMemorySource>> {
+        let connection = self.connection()?;
+        Ok(connection.query_row(&format!("SELECT {SOURCE_COLUMNS} FROM memory_sources WHERE source_kind='approved_file' AND origin_id=?1 AND state='active' ORDER BY updated_at_ms DESC LIMIT 1"), [origin_id], source_row).optional()?)
     }
 
     pub fn memory_complete_job(&self, kind: &str, origin_id: &str) -> StorageResult<()> {
@@ -178,12 +186,28 @@ impl Storage {
     ) -> StorageResult<bool> {
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let alias_kind = match source.source_kind.as_str() {
+            "user_note" => "legacy_crowquant",
+            "legacy_crowquant" => "user_note",
+            kind => kind,
+        };
+        let alias_key = format!("{alias_kind}:{}", source.origin_id);
         let excluded: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memory_exclusions WHERE logical_key=?1)",
-            [&source.logical_key],
+            "SELECT EXISTS(SELECT 1 FROM memory_exclusions WHERE logical_key IN (?1,?2))",
+            params![source.logical_key, alias_key],
             |r| r.get(0),
         )?;
         if excluded {
+            tx.execute(
+                "DELETE FROM memory_jobs WHERE origin_id=?1 AND source_kind IN (?2,?3)",
+                params![source.origin_id, source.source_kind, alias_kind],
+            )?;
+            tx.commit()?;
+            return Ok(false);
+        }
+        if source.source_kind == "legacy_crowquant" && tx.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources WHERE source_kind='user_note' AND origin_id=?1)",[&source.origin_id],|r|r.get::<_,bool>(0))? {
+            tx.execute("DELETE FROM memory_jobs WHERE source_kind='legacy_crowquant' AND origin_id=?1",[&source.origin_id])?;
+            tx.commit()?;
             return Ok(false);
         }
         let text: Option<String> = match source.source_kind.as_str() {
@@ -224,6 +248,10 @@ impl Storage {
             return Err(StorageError::Conflict(
                 "Memory source changed during indexing; retry pending work".into(),
             ));
+        }
+        if source.source_kind == "user_note" {
+            tx.execute("DELETE FROM memory_chunks WHERE source_id IN (SELECT id FROM memory_sources WHERE source_kind='legacy_crowquant' AND origin_id=?1)",[&source.origin_id])?;
+            tx.execute("UPDATE memory_sources SET state='superseded',updated_at_ms=?2 WHERE source_kind='legacy_crowquant' AND origin_id=?1 AND state='active'",params![source.origin_id,source.updated_at_ms])?;
         }
         let previous: Option<String> = tx
             .query_row(
@@ -317,6 +345,22 @@ impl Storage {
         sources_from(&connection)
     }
 
+    /// Only bounded participating IDs, never retained snapshot bodies.
+    pub(crate) fn memory_source_metadata(
+        &self,
+        ids: &[String],
+    ) -> StorageResult<Vec<NativeMemorySource>> {
+        let connection = self.connection()?;
+        let mut sources = Vec::with_capacity(ids.len());
+        for batch in ids.chunks(256) {
+            let placeholders = vec!["?"; batch.len()].join(",");
+            let mut statement = connection.prepare(&format!("SELECT id,logical_key,source_kind,origin_id,title,authorship,content_hash,NULL,state,predecessor_id,created_at_ms,updated_at_ms FROM memory_sources WHERE state='active' AND id IN ({placeholders})"))?;
+            let rows = statement.query_map(rusqlite::params_from_iter(batch), source_row)?;
+            sources.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(sources)
+    }
+
     pub fn memory_counts(
         &self,
         conversations: bool,
@@ -328,7 +372,7 @@ impl Storage {
     }
 
     pub fn memory_source_active(&self, id: &str) -> StorageResult<bool> {
-        Ok(self.connection()?.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources s WHERE s.id=?1 AND s.state='active' AND NOT EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key=s.logical_key))",[id],|r|r.get(0))?)
+        Ok(self.connection()?.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources s WHERE s.id=?1 AND s.state='active' AND NOT EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key=s.logical_key OR (s.source_kind IN ('user_note','legacy_crowquant') AND x.logical_key IN ('user_note:'||s.origin_id,'legacy_crowquant:'||s.origin_id))))",[id],|r|r.get(0))?)
     }
 
     pub fn memory_crowquant_withdrawn(&self, id: &str) -> StorageResult<bool> {
@@ -369,19 +413,27 @@ impl Storage {
     pub fn memory_withdraw(&self, id: &str) -> StorageResult<()> {
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let key: String = tx
+        let (key, kind, origin): (String, String, String) = tx
             .query_row(
-                "SELECT logical_key FROM memory_sources WHERE id=?1",
+                "SELECT logical_key,source_kind,origin_id FROM memory_sources WHERE id=?1",
                 [id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
             .ok_or_else(|| StorageError::not_found("memory", id))?;
-        tx.execute("INSERT OR IGNORE INTO memory_exclusions VALUES(?1)", [&key])?;
-        tx.execute("DELETE FROM memory_chunks WHERE source_id IN (SELECT id FROM memory_sources WHERE logical_key=?1)",[&key])?;
+        let alias = match kind.as_str() {
+            "user_note" => format!("legacy_crowquant:{origin}"),
+            "legacy_crowquant" => format!("user_note:{origin}"),
+            _ => key.clone(),
+        };
         tx.execute(
-            "UPDATE memory_sources SET state='withdrawn' WHERE logical_key=?1",
-            [key],
+            "INSERT OR IGNORE INTO memory_exclusions VALUES(?1),(?2)",
+            params![key, alias],
+        )?;
+        tx.execute("DELETE FROM memory_chunks WHERE source_id IN (SELECT id FROM memory_sources WHERE logical_key IN (?1,?2))",params![key,alias])?;
+        tx.execute(
+            "UPDATE memory_sources SET state='withdrawn' WHERE logical_key IN (?1,?2)",
+            params![key, alias],
         )?;
         tx.commit()?;
         Ok(())
@@ -390,7 +442,7 @@ impl Storage {
     pub fn memory_reset_index(&self) -> StorageResult<()> {
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch("DELETE FROM memory_chunks; DELETE FROM memory_job_errors; INSERT INTO memory_fts(memory_fts) VALUES('rebuild'); INSERT OR IGNORE INTO memory_jobs SELECT 'conversation_message',id FROM messages; INSERT OR IGNORE INTO memory_jobs SELECT 'legacy_crowquant',id FROM crowquant_memories; INSERT OR IGNORE INTO memory_jobs SELECT 'approved_action',id FROM proposed_actions WHERE status='succeeded';")?;
+        tx.execute_batch("DELETE FROM memory_chunks; DELETE FROM memory_job_errors; INSERT INTO memory_fts(memory_fts) VALUES('rebuild'); INSERT OR IGNORE INTO memory_jobs SELECT 'conversation_message',id FROM messages; INSERT OR IGNORE INTO memory_jobs SELECT 'legacy_crowquant',id FROM crowquant_memories; INSERT OR IGNORE INTO memory_jobs SELECT 'approved_action',id FROM proposed_actions WHERE status='succeeded'; INSERT OR IGNORE INTO memory_jobs SELECT 'approved_file',origin_id FROM memory_sources WHERE source_kind='approved_file' AND state='active';")?;
         tx.commit()?;
         Ok(())
     }

@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -31,6 +31,9 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     }
     if installed_version < 4 {
         migrate_to_v4(&transaction)?;
+    }
+    if installed_version < 5 {
+        migrate_to_v5(&transaction)?;
     }
 
     transaction.commit()?;
@@ -271,5 +274,51 @@ fn migrate_to_v4(connection: &Connection) -> StorageResult<()> {
     "#,
     )?;
     connection.pragma_update(None, "user_version", 4u32)?;
+    Ok(())
+}
+
+fn migrate_to_v5(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(r#"
+        INSERT OR IGNORE INTO memory_exclusions
+            SELECT 'legacy_crowquant:' || substr(logical_key,length('user_note:')+1)
+            FROM memory_exclusions WHERE substr(logical_key,1,length('user_note:'))='user_note:';
+        INSERT OR IGNORE INTO memory_exclusions
+            SELECT 'user_note:' || substr(logical_key,length('legacy_crowquant:')+1)
+            FROM memory_exclusions WHERE substr(logical_key,1,length('legacy_crowquant:'))='legacy_crowquant:';
+        DELETE FROM memory_chunks WHERE source_id IN (
+            SELECT id FROM memory_sources s WHERE s.source_kind IN ('user_note','legacy_crowquant')
+            AND EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key=s.logical_key));
+        UPDATE memory_sources SET state='withdrawn' WHERE source_kind IN ('user_note','legacy_crowquant')
+            AND EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key=memory_sources.logical_key);
+        DELETE FROM memory_jobs WHERE source_kind IN ('user_note','legacy_crowquant')
+            AND EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key='user_note:'||memory_jobs.origin_id);
+        DELETE FROM memory_chunks WHERE source_id IN (
+            SELECT legacy.id FROM memory_sources legacy WHERE legacy.source_kind='legacy_crowquant'
+            AND EXISTS(SELECT 1 FROM memory_sources native WHERE native.source_kind='user_note'
+                AND native.origin_id=legacy.origin_id AND native.state='active'));
+        UPDATE memory_sources SET state='superseded' WHERE source_kind='legacy_crowquant' AND state='active'
+            AND EXISTS(SELECT 1 FROM memory_sources native WHERE native.source_kind='user_note'
+                AND native.origin_id=memory_sources.origin_id AND native.state='active');
+        INSERT OR IGNORE INTO memory_jobs
+            SELECT source_kind,origin_id FROM memory_sources s
+            WHERE s.state='active' AND s.source_kind IN ('user_note','approved_file')
+            AND NOT EXISTS(SELECT 1 FROM memory_chunks c WHERE c.source_id=s.id);
+
+        CREATE TRIGGER memory_note_exclusion AFTER INSERT ON memory_exclusions
+        WHEN substr(new.logical_key,1,instr(new.logical_key,':')-1) IN ('user_note','legacy_crowquant') BEGIN
+            INSERT OR IGNORE INTO memory_exclusions VALUES(
+                CASE substr(new.logical_key,1,instr(new.logical_key,':')-1)
+                    WHEN 'user_note' THEN 'legacy_crowquant:' ELSE 'user_note:' END
+                || substr(new.logical_key,instr(new.logical_key,':')+1));
+            DELETE FROM memory_chunks WHERE source_id IN (SELECT id FROM memory_sources
+                WHERE source_kind IN ('user_note','legacy_crowquant')
+                AND origin_id=substr(new.logical_key,instr(new.logical_key,':')+1));
+            UPDATE memory_sources SET state='withdrawn' WHERE source_kind IN ('user_note','legacy_crowquant')
+                AND origin_id=substr(new.logical_key,instr(new.logical_key,':')+1);
+            DELETE FROM memory_jobs WHERE source_kind IN ('user_note','legacy_crowquant')
+                AND origin_id=substr(new.logical_key,instr(new.logical_key,':')+1);
+        END;
+    "#)?;
+    connection.pragma_update(None, "user_version", 5u32)?;
     Ok(())
 }

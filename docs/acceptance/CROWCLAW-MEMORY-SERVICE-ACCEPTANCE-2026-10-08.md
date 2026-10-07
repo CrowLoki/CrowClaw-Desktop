@@ -202,8 +202,6 @@ public release assets. The earlier ignored `release/` directory still contains
 the first candidate's manifest; the hashes above refer to the rebuilt files in
 `src-tauri/target/release/` and its `bundle/nsis/` subdirectory.
 
-### Still outstanding
-
 ### Follow-up transport investigation and hosted acceptance preparation
 
 The semantic fixture now records accepted connections, received-byte counts,
@@ -236,13 +234,70 @@ Hosted execution remains pending. No local installation/account state changed.
 
 ### Remaining product gates
 
+### Hosted result and reviewed source corrections
+
+[Windows run 37646593800](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37646593800)
+ran exact source `956df3f07976408ebc7c70c5441deb5d4c4de46a`. Frontend and Rust
+tests, the Windows installer build and collection passed. Installation and
+registration checks completed, but executable identity comparison failed before
+UI acceptance. The failure annotation and step log were inspected; this run is
+not a passing installed-app receipt. The retained fixture receipt binds installer
+SHA-256 `b37ebc5b5c816612f74cb324afb8a4d51652b518609c0b0218316cbb88baa8cf`
+and unbundled executable SHA-256
+`d9be16cb81d7830f5c319d805bd3c22fd1062046c261e4bb6488403084aa9a19`.
+
+Tauri temporarily changes an embedded bundle-type marker while packaging and
+then restores the original executable. This explains why comparing the installed
+NSIS payload directly with the restored build-tree executable is not the right
+identity check. The corrected comparator permits only the unique NSIS marker
+change, in memory; any other byte difference still fails. It does not patch files
+or disable bundler behavior. See [Tauri's bundler implementation](https://github.com/tauri-apps/tauri/blob/dev/crates/tauri-bundler/src/bundle.rs).
+Fixture tests reject unrelated mutations, missing/wrong/ambiguous markers and
+input mutation. Installed execution of that corrected gate remains to be run.
+
+Further local transport comparison reproduced 32/32 failures on ports 9517–9548
+with each of HTTP, Tokio TCP and ordinary blocking TCP. HTTP and blocking TCP
+controls on ports 19894–19925 passed 32/32. The controls include an overlapping
+run. No app database or memory logic participates in this probe. Local policy
+observations were read-only; no firewall/sandbox settings, retries, fixed test
+ports or serial-only gate were introduced as a product fix.
+
+Independent production review resulted in these source corrections:
+
+- Native note identity and canonical CrowQuant insertion share one transaction;
+  forced identity-write failure rolls back the canonical insert.
+- Stale legacy candidates cannot install a second active note identity. Either
+  identity withdraws the origin. Schema 5 repairs existing one-sided exclusions,
+  removes their chunks/vectors, retires duplicate active aliases, and enforces
+  alias withdrawal at the database boundary without deleting original notes.
+- Reset/rebuild queues admitted-file jobs transactionally. Reopen can resume
+  those jobs. Recovery keeps the admitted source identity and recorded hash;
+  changed or missing snapshots become visible bounded job failures, not new
+  revisions falsely attributed to the earlier approval.
+- Search fetches only metadata for its bounded participating source IDs, never
+  all historical file snapshot bodies. A corrupt unrelated historical snapshot
+  no longer prevents otherwise valid search.
+- The native export projection now includes canonical retained notes,
+  conversations and action provenance plus memory settings. A withdrawn note
+  and an unindexed conversation remain in export; unrelated settings stay out.
+
+Each reported defect was reproduced by a failing regression before its fix.
+The latest normal full run passes 111 Rust tests: 47 library, 23 agent, 24 memory,
+10 semantic and 7 storage. Frontend 18/18, production frontend build,
+release-script checks, installer identity fixtures and the local refusal guard
+pass. The earlier native export receipt proves saving/parsing only; it does not
+retroactively prove this expanded export payload in the installed app.
+
+### Still requiring product acceptance
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source
   first. The database file was 13,565,952 bytes. These measurements are for
   this synthetic native-service workload, not UI latency or a general SLA.
-- Resolve the default parallel semantic test failures and intermittent app
-  loopback timeouts without replacing the test gate with a serial retry.
+- Reconcile remaining native model-connectivity evidence with the isolated
+  host-port behavior; preserve explicit degraded/offline behavior and never
+  weaken host security controls as a product workaround.
 - Complete the clean installed-profile matrix (including separate conversations
   and full runtime-dependency isolation). This host was not disconnected from
   external networking, and other checkouts were not hidden/moved.

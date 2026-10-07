@@ -83,8 +83,15 @@ pub(super) fn search_ranked(
             "Memory scan exceeds {SCAN_MAX_CHUNKS} chunks; narrow the indexed sources"
         ));
     }
+    let source_ids = chunks
+        .iter()
+        .map(|chunk| chunk.source_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    check_cancelled(token)?;
     let sources = storage
-        .memory_sources()
+        .memory_source_metadata(&source_ids)
         .map_err(|e| e.to_string())?
         .into_iter()
         .map(|s| (s.id.clone(), s))

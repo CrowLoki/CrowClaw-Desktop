@@ -1,4 +1,5 @@
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use sha2::{Digest, Sha256};
 
 use super::{
     now_ms, require_non_empty, CrowQuantMemory, CrowQuantMemoryInput, Storage, StorageResult,
@@ -13,8 +14,9 @@ impl Storage {
         require_non_empty("memory text", &input.text)?;
         require_non_empty("memory algorithm", &input.algorithm)?;
         let created_at_ms = now_ms()?;
-        let connection = self.connection()?;
-        connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO crowquant_memories
              (id, text, block, format_version, algorithm, dimension, seed, bits, original_bytes, created_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -33,6 +35,24 @@ impl Storage {
                 created_at_ms,
             ],
         )?;
+        // The insert trigger queues indexing. Publish its source identity in
+        // this same transaction, before any worker can classify the new row as
+        // a legacy note. Chunks remain independently rebuildable.
+        let key = format!("user_note:{}", input.id);
+        let legacy_key = format!("legacy_crowquant:{}", input.id);
+        let content_hash = format!("{:x}", Sha256::digest(input.text.as_bytes()));
+        let source_id = format!(
+            "{:x}",
+            Sha256::digest(format!("crowclaw.source.v1\0{key}\0{content_hash}").as_bytes())
+        );
+        let agent = input.id.starts_with("agent-action-");
+        transaction.execute(
+            "INSERT INTO memory_sources(id,logical_key,source_kind,origin_id,title,authorship,content_hash,snapshot,state,created_at_ms,updated_at_ms)
+             VALUES(?1,?2,'user_note',?3,?4,?5,?6,NULL,CASE WHEN EXISTS(SELECT 1 FROM memory_exclusions WHERE logical_key IN (?2,?8)) THEN 'withdrawn' ELSE 'active' END,?7,?7)
+             ON CONFLICT(id) DO NOTHING",
+            params![source_id,key,input.id,if agent {"Approved remembered note"} else {"Your note"},if agent {"assistant"} else {"user"},content_hash,created_at_ms,legacy_key],
+        )?;
+        transaction.commit()?;
         Ok(CrowQuantMemory {
             id: input.id.clone(),
             text: input.text.clone(),

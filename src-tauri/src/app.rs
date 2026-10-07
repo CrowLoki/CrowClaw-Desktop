@@ -934,8 +934,7 @@ pub async fn crowclaw_memory_export(state: State<'_, AppState>) -> Result<Value,
     let Some(destination) = destination else {
         return Ok(json!({"saved":false}));
     };
-    let export = state.storage.export_all().map_err(display_error)?;
-    let value = json!({"schemaVersion":export.schema_version,"exportedAtMs":export.exported_at_ms,"sources":export.memory_sources,"chunks":export.memory_chunks,"exclusions":export.memory_exclusions,"embeddingProfiles":export.memory_embedding_profiles,"vectors":export.memory_vectors});
+    let value = crate::memory_export::snapshot(&state.storage)?;
     let name = destination
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

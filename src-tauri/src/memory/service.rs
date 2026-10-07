@@ -123,28 +123,16 @@ impl MemoryService {
         };
         for (kind, id) in jobs {
             search::check_cancelled(token)?;
-            if let Some(candidate) = self
-                .storage
-                .memory_candidate(&kind, &id)
-                .map_err(|e| e.to_string())?
-            {
-                match self.index_candidate(candidate, token) {
-                    Ok(true) => report.indexed += 1,
-                    Ok(false) => report.skipped += 1,
-                    Err(error) if token.is_cancelled() => return Err(error),
-                    Err(error) => {
-                        self.storage
-                            .memory_fail_job(&kind, &id, &error)
-                            .map_err(|e| e.to_string())?;
-                        report.warnings.push(error);
-                        continue;
-                    }
+            match self.index_job(&kind, &id, token) {
+                Ok(true) => report.indexed += 1,
+                Ok(false) => report.skipped += 1,
+                Err(error) if token.is_cancelled() => return Err(error),
+                Err(error) => {
+                    self.storage
+                        .memory_fail_job(&kind, &id, &error)
+                        .map_err(|e| e.to_string())?;
+                    report.warnings.push(error);
                 }
-            } else {
-                report.skipped += 1;
-                self.storage
-                    .memory_complete_job(&kind, &id)
-                    .map_err(|e| e.to_string())?;
             }
         }
         report.pending = self
@@ -155,6 +143,40 @@ impl MemoryService {
             )
             .map_err(|e| e.to_string())?;
         Ok(report)
+    }
+
+    fn index_job(&self, kind: &str, id: &str, token: &CancellationToken) -> Result<bool, String> {
+        if kind == "approved_file" {
+            if let Some(source) = self
+                .storage
+                .memory_file_source(id)
+                .map_err(|e| e.to_string())?
+            {
+                let text = source
+                    .snapshot
+                    .as_ref()
+                    .ok_or("Remembered file snapshot is missing")?;
+                if chunker::hash(text) != source.content_hash {
+                    return Err("Remembered file snapshot failed its recorded content hash; it was not indexed".into());
+                }
+                let chunks = chunker::chunks(&source.id, text)?;
+                search::check_cancelled(token)?;
+                return self
+                    .storage
+                    .memory_store_revision(&source, &chunks)
+                    .map_err(|e| e.to_string());
+            }
+        } else if let Some(candidate) = self
+            .storage
+            .memory_candidate(kind, id)
+            .map_err(|e| e.to_string())?
+        {
+            return self.index_candidate(candidate, token);
+        }
+        self.storage
+            .memory_complete_job(kind, id)
+            .map_err(|e| e.to_string())?;
+        Ok(false)
     }
 
     fn index_candidate(
@@ -290,17 +312,6 @@ impl MemoryService {
         self.storage
             .memory_reset_index()
             .map_err(|e| e.to_string())?;
-        for source in self.storage.memory_sources().map_err(|e| e.to_string())? {
-            search::check_cancelled(token)?;
-            if source.state == "active" && source.source_kind == "approved_file" {
-                if let Some(text) = &source.snapshot {
-                    let chunks = chunker::chunks(&source.id, text)?;
-                    self.storage
-                        .memory_store_revision(&source, &chunks)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-        }
         self.sync(INDEX_BATCH, token)
     }
 

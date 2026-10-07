@@ -84,6 +84,181 @@ fn status_counts_sources_once_and_only_counts_enabled_active_chunks() {
 }
 
 #[test]
+fn schema_four_one_sided_note_withdrawal_is_repaired_before_any_search() {
+    for withdrawn_kind in ["user_note", "legacy_crowquant"] {
+        let (dir, storage, service) = open();
+        let note = service
+            .remember("previously withdrawn sapphire note")
+            .unwrap();
+        let native = storage.memory_sources().unwrap().remove(0);
+        let connection = rusqlite::Connection::open(storage.database_path()).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON; DROP TRIGGER IF EXISTS memory_note_exclusion;")
+            .unwrap();
+        connection.execute("INSERT INTO memory_sources(id,logical_key,source_kind,origin_id,title,authorship,content_hash,snapshot,state,predecessor_id,created_at_ms,updated_at_ms) SELECT 'old-legacy-alias','legacy_crowquant:'||origin_id,'legacy_crowquant',origin_id,title,authorship,content_hash,snapshot,'active',NULL,created_at_ms,updated_at_ms FROM memory_sources WHERE id=?1",[&native.id]).unwrap();
+        connection.execute("INSERT INTO memory_chunks(id,source_id,ordinal,text,start_byte,end_byte,content_hash,lexical_block,title) SELECT 'old-legacy-chunk','old-legacy-alias',ordinal,text,start_byte,end_byte,content_hash,lexical_block,title FROM memory_chunks WHERE source_id=?1",[&native.id]).unwrap();
+        connection.execute_batch("INSERT INTO memory_embedding_profiles VALUES('old-profile','{}',0); INSERT INTO memory_vectors SELECT id,'old-profile',2,'f32le-normalized-v1',X'0000803F00000000',content_hash,0 FROM memory_chunks;").unwrap();
+        let withdrawn_id = if withdrawn_kind == "user_note" {
+            native.id.clone()
+        } else {
+            "old-legacy-alias".into()
+        };
+        connection
+            .execute(
+                "INSERT INTO memory_exclusions VALUES(?1)",
+                [format!("{withdrawn_kind}:{}", note.id)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM memory_chunks WHERE source_id=?1",
+                [&withdrawn_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE memory_sources SET state='withdrawn' WHERE id=?1",
+                [&withdrawn_id],
+            )
+            .unwrap();
+        connection
+            .execute_batch("DELETE FROM memory_jobs; PRAGMA user_version=4;")
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM memory_vectors", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(service);
+        drop(storage);
+        let storage = Arc::new(Storage::open(dir.path()).unwrap());
+        let service = MemoryService::new(storage.clone());
+        assert!(
+            service
+                .search(&query("sapphire"), &CancellationToken::new())
+                .unwrap()
+                .hits
+                .is_empty(),
+            "old {withdrawn_kind} tombstone must exclude its sibling immediately"
+        );
+        assert!(storage.export_all().unwrap().memory_vectors.is_empty());
+        assert_eq!(
+            storage.get_crowquant_memory(&note.id).unwrap().unwrap(),
+            note
+        );
+        assert_eq!(service.status().unwrap().active_sources, 0);
+    }
+}
+
+#[test]
+fn canonical_note_identity_commits_atomically_with_its_content() {
+    use crowclaw_desktop_lib::storage::CrowQuantMemoryInput;
+    let (_dir, storage, service) = open();
+    let template = service.remember("transactional sapphire note").unwrap();
+    let input = CrowQuantMemoryInput {
+        id: "new-native-note".into(),
+        text: template.text,
+        block: template.block,
+        format_version: template.format_version,
+        algorithm: template.algorithm,
+        dimension: template.dimension,
+        seed: template.seed,
+        bits: template.bits,
+        original_bytes: template.original_bytes,
+    };
+    storage.create_crowquant_memory(&input).unwrap();
+    assert_eq!(
+        storage
+            .memory_candidate("legacy_crowquant", &input.id)
+            .unwrap()
+            .unwrap()
+            .source_kind,
+        "user_note"
+    );
+    rusqlite::Connection::open(storage.database_path()).unwrap().execute_batch("CREATE TRIGGER fail_note_identity BEFORE INSERT ON memory_sources BEGIN SELECT RAISE(ABORT,'forced admission failure'); END;").unwrap();
+    let failed = CrowQuantMemoryInput {
+        id: "failed-native-note".into(),
+        ..input
+    };
+    assert!(storage.create_crowquant_memory(&failed).is_err());
+    assert!(storage.get_crowquant_memory(&failed.id).unwrap().is_none());
+}
+
+#[test]
+fn search_does_not_deserialize_snapshots_from_unrelated_retained_history() {
+    let (_dir, storage, service) = open();
+    service.remember("current violet telescope").unwrap();
+    // A corrupt withdrawn snapshot is not a search input. Loading it anyway
+    // reproduces the same unbounded historical-body query as large valid files.
+    rusqlite::Connection::open(storage.database_path()).unwrap().execute_batch("INSERT INTO memory_sources(id,logical_key,source_kind,origin_id,title,authorship,content_hash,snapshot,state,created_at_ms,updated_at_ms) VALUES('old-file','approved_file:old','approved_file','old','Withdrawn file','tool','old',X'FF','withdrawn',0,0);").unwrap();
+    let result = service
+        .search(&query("violet"), &CancellationToken::new())
+        .expect("search must not deserialize unrelated snapshot bodies");
+    assert_eq!(result.hits[0].text, "current violet telescope");
+}
+
+#[test]
+fn stale_note_classification_cannot_create_an_alternate_withdrawable_identity() {
+    let (_dir, storage, service) = open();
+    let note = service.remember("singular cobalt origin").unwrap();
+    let original = storage.memory_sources().unwrap().remove(0);
+    let mut stale = original.clone();
+    stale.id = "stale-legacy-candidate".into();
+    stale.source_kind = "legacy_crowquant".into();
+    stale.logical_key = format!("legacy_crowquant:{}", note.id);
+    let mut chunks = storage.export_all().unwrap().memory_chunks;
+    for chunk in &mut chunks {
+        chunk.id = format!("stale-{}", chunk.id);
+        chunk.source_id = stale.id.clone();
+    }
+    // The background reader can classify a queued note before direct admission
+    // completes. Its delayed writer must not install a second logical origin.
+    assert!(!storage.memory_store_revision(&stale, &chunks).unwrap());
+    assert_eq!(service.status().unwrap().active_sources, 1);
+    service.withdraw(&original.id).unwrap();
+    service.rebuild(&CancellationToken::new()).unwrap();
+    assert!(service
+        .search(&query("cobalt"), &CancellationToken::new())
+        .unwrap()
+        .hits
+        .is_empty());
+    assert!(storage.get_crowquant_memory(&note.id).unwrap().is_some());
+}
+
+#[test]
+fn native_note_promotion_retires_the_legacy_alias_and_withdraws_both_keys() {
+    let (_dir, storage, service) = open();
+    let note = service.remember("promoted quartz origin").unwrap();
+    // Alpha 3 had the canonical row but no native source metadata.
+    rusqlite::Connection::open(storage.database_path()).unwrap().execute_batch("DELETE FROM memory_chunks; DELETE FROM memory_sources; INSERT OR IGNORE INTO memory_jobs SELECT 'legacy_crowquant',id FROM crowquant_memories;").unwrap();
+    service.sync(64, &CancellationToken::new()).unwrap();
+    let legacy = storage.memory_sources().unwrap().remove(0);
+    let mut native = legacy.clone();
+    native.id = "native-note-candidate".into();
+    native.source_kind = "user_note".into();
+    native.logical_key = format!("user_note:{}", note.id);
+    let mut chunks = storage.export_all().unwrap().memory_chunks;
+    for chunk in &mut chunks {
+        chunk.id = format!("native-{}", chunk.id);
+        chunk.source_id = native.id.clone();
+    }
+    storage.memory_store_revision(&native, &chunks).unwrap();
+    assert_eq!(service.status().unwrap().active_sources, 1);
+    // Even an older result bound to the legacy source must withdraw the origin.
+    service.withdraw(&legacy.id).unwrap();
+    service.rebuild(&CancellationToken::new()).unwrap();
+    assert!(service
+        .search(&query("quartz"), &CancellationToken::new())
+        .unwrap()
+        .hits
+        .is_empty());
+    assert_eq!(service.status().unwrap().pending, 0);
+}
+
+#[test]
 fn own_conversations_are_searchable_offline_with_authorship() {
     let (_dir, storage, service) = open();
     message(
@@ -627,15 +802,16 @@ fn oversized_source_is_visible_and_retry_bounded_without_blocking_other_work() {
     assert_eq!(storage.list_messages("conversation").unwrap().len(), 2);
 }
 
-#[test]
-fn admitted_file_uses_retained_result_without_reopening_and_survives_rebuild() {
+fn admitted_file_fixture(
+    storage: &Storage,
+    service: &MemoryService,
+) -> crowclaw_desktop_lib::storage::NativeMemorySource {
     use crowclaw_desktop_lib::{
         storage::ProposedActionInput,
         tools::{ActionId, ToolExecution, ToolOutput},
     };
-    let (_dir, storage, service) = open();
     message(
-        &storage,
+        storage,
         "file-question",
         MessageRole::User,
         "Read selected file",
@@ -668,11 +844,75 @@ fn admitted_file_uses_retained_result_without_reopening_and_survives_rebuild() {
             .unwrap(),
         )
         .unwrap();
-    let source = service.admit_approved_file(&id.to_string()).unwrap();
+    service.admit_approved_file(&id.to_string()).unwrap()
+}
+
+#[test]
+fn file_recovery_rejects_a_snapshot_that_no_longer_matches_its_admitted_hash() {
+    for replacement in [Some("unapproved replacement contents"), None] {
+        let (_dir, storage, service) = open();
+        let source = admitted_file_fixture(&storage, &service);
+        rusqlite::Connection::open(storage.database_path())
+            .unwrap()
+            .execute(
+                "UPDATE memory_sources SET snapshot=?1 WHERE id=?2",
+                rusqlite::params![replacement, source.id],
+            )
+            .unwrap();
+        let report = service.rebuild(&CancellationToken::new()).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("snapshot")),
+            "corrupt canonical snapshot must be an explicit indexing failure"
+        );
+        let mut file = query("unapproved");
+        file.source_kind = Some("approved_file".into());
+        assert!(service
+            .search(&file, &CancellationToken::new())
+            .unwrap()
+            .hits
+            .is_empty());
+        let files = storage
+            .memory_sources()
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.source_kind == "approved_file")
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, source.id);
+        assert_eq!(files[0].content_hash, source.content_hash);
+        assert!(report.pending > 0);
+    }
+}
+
+#[test]
+fn admitted_file_uses_retained_result_without_reopening_and_survives_rebuild() {
+    let (dir, storage, service) = open();
+    let source = admitted_file_fixture(&storage, &service);
+    let id = source.origin_id.clone();
     assert_eq!(source.authorship, "tool");
     assert!(!serde_json::to_string(&source)
         .unwrap()
         .contains("C:/no-such-file"));
+    // Simulate process loss after the reset transaction, before any replay.
+    storage.memory_reset_index().unwrap();
+    drop(service);
+    drop(storage);
+    let storage = Arc::new(Storage::open(dir.path()).unwrap());
+    let service = MemoryService::new(storage.clone());
+    service.sync(64, &CancellationToken::new()).unwrap();
+    let mut recovered = query("sapphire");
+    recovered.source_kind = Some("approved_file".into());
+    assert_eq!(
+        service
+            .search(&recovered, &CancellationToken::new())
+            .unwrap()
+            .hits
+            .len(),
+        1
+    );
     service.rebuild(&CancellationToken::new()).unwrap();
     let mut file = query("sapphire");
     file.source_kind = Some("approved_file".into());

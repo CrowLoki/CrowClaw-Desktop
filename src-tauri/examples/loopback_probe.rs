@@ -16,6 +16,11 @@ fn main() {
     let mode = std::env::args()
         .nth(1)
         .expect("http|async-tcp|blocking-tcp");
+    let port_base: u16 = std::env::args()
+        .nth(2)
+        .map(|value| value.parse().expect("numeric port base"))
+        .unwrap_or(0);
+    assert!(port_base == 0 || (1024..=65504).contains(&port_base));
     assert!(["http", "async-tcp", "blocking-tcp"].contains(&mode.as_str()));
     let mut failures = 0;
     for round in 0..4 {
@@ -24,7 +29,8 @@ fn main() {
             let mode = mode.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = if port_base == 0 { 0 } else { port_base + round * 8 + worker };
+                let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
                 listener.set_nonblocking(true).unwrap();
                 let address = listener.local_addr().unwrap();
                 let accepted = Arc::new(AtomicUsize::new(0));
