@@ -167,14 +167,58 @@ it to a serial run.
 
 ### Outstanding gates
 
+### Rebuilt native candidate results
+
+`npm run tauri build` succeeded from clean commit
+`08d4a04a9b6f16242abf91dc89290f5320b6e46f`. This was a diagnostic candidate build,
+not a passing release-wrapper run (the default-test failure above remains).
+
+- Executable SHA-256:
+  `bcea4cd1b9a18c8cff95b57e764e2b4578dc7e76ec433582b47dbd892818ec68`.
+- NSIS SHA-256:
+  `d58ce798044310d5234377a631fb0f598ef551880403f946e6631cb2e8cddd23`.
+- Native Save dialog wrote a 75,178-byte JSON file: schema 4, 21 sources,
+  21 chunks, 21 vectors. The UI showed success after the file existed and parsed.
+- A second native dialog was cancelled; the UI reported cancellation, with one
+  export file still present. No browser download was used.
+- After a complete application close/reopen, existing conversations, approved
+  notes, profile settings and semantic results remained available.
+- Stopping the owned synthetic model produced a visible connection-refused
+  warning and a keyword/CrowQuant fallback result for the quantum note.
+- Withdrawing that note removed it from keyword search after rebuild and another
+  restart. Read-only inspection confirmed the original CrowQuant row/text still
+  existed. The denied sentinel still had zero stored rows.
+- The synthetic file was changed after its approved read. Clicking `Remember
+  this approved file content` stored the earlier approved basil text, not the
+  replacement. A source-filtered keyword query found that snapshot before and
+  after restart; the unapproved replacement had zero indexed chunks.
+- Normal Alpha 3 SQLite, WAL and SHM hashes all matched their captured baseline.
+- The candidate was closed gracefully and the exact owned synthetic server was
+  stopped. No test app/server was left running. The local isolated profile,
+  synthetic export and screenshots were retained for reproducibility.
+
+Local screenshots under ignored `output/playwright/` were visually inspected:
+`native-before-rebuild.png`, `native-offline-fallback.png`, and
+`native-file-memory-after-restart.png`. They are test-profile evidence, not
+public release assets. The earlier ignored `release/` directory still contains
+the first candidate's manifest; the hashes above refer to the rebuilt files in
+`src-tauri/target/release/` and its `bundle/nsis/` subdirectory.
+
+### Still outstanding
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source
   first. The database file was 13,565,952 bytes. These measurements are for
   this synthetic native-service workload, not UI latency or a general SLA.
-- Actual native desktop rendering and user workflows.
-- Installed upgrade/restart, export-file saving and installer/uninstaller
-  acceptance with the other Crow repositories unavailable.
+- Resolve the default parallel semantic test failures and intermittent app
+  loopback timeouts without replacing the test gate with a serial retry.
+- Complete the clean installed-profile matrix (including separate conversations
+  and full runtime-dependency isolation). This host was not disconnected from
+  external networking, and other checkouts were not hidden/moved.
+- Installed upgrade and installer/uninstaller acceptance with the other Crow
+  repositories unavailable. The NSIS candidate was built but not installed;
+  existing Alpha 3 registration and shortcuts were preserved.
 - Release artifact binding, review and GitHub delivery.
 - The wider approved standalone roadmap, including God mode.
 
