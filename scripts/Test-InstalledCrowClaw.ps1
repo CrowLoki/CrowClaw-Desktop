@@ -12,7 +12,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# This changes HKCU installation state. Never run it in Crow's normal account,
+# This changes installation state and temporary app-specific WebView test policy.
+# Never run it in Crow's normal account,
 # a self-hosted runner, or over an existing installation/profile/shortcut.
 if (-not $IsWindows -or $PSVersionTable.PSVersion.Major -lt 7 -or
     $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
@@ -91,7 +92,50 @@ $qaModel = $null
 $qaInstalled = $false
 $qaChecks = [ordered]@{ installerHash = $ExpectedInstallerSha256; executableHash = $ExpectedExecutableSha256; version = $ExpectedVersion; passed = $false }
 $qaChecks.shortcutUiVersions = @()
+$qaElevated = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$qaChecks.elevatedHost = $qaElevated
+$qaChecks.driverConfiguration = $(if ($qaElevated) { 'app-specific-HKLM' } else { 'child-environment' })
+$qaChecks.driverLaunches = @()
+$qaDriverPolicy = @()
 $qaDebugLaunch = 0
+
+function Set-DriverBrowserPolicy([string]$Arguments, [string]$DataFolder) {
+    if (-not $qaElevated) { return }
+    if ($script:qaDriverPolicy.Count) { throw 'Previous WebView driver policy was not removed.' }
+    # WebView2 ignores environment and HKCU overrides in elevated hosts.
+    # Only this disposable runner and this executable receive test flags:
+    # https://learn.microsoft.com/microsoft-edge/webview2/concepts/security
+    $qaPolicies = [ordered]@{ AdditionalBrowserArguments = $Arguments; UserDataFolder = $DataFolder }
+    foreach ($qaPolicy in $qaPolicies.Keys) {
+        foreach ($qaHive in @('HKLM:', 'HKCU:')) {
+            $qaPolicyPath = "$qaHive\Software\Policies\Microsoft\Edge\WebView2\$qaPolicy"
+            if (-not (Test-Path -LiteralPath $qaPolicyPath)) { continue }
+            $qaValues = Get-ItemProperty -LiteralPath $qaPolicyPath
+            foreach ($qaName in @('crowclaw-desktop.exe', 'au.com.crowloki.crowclaw', '*')) {
+                if ($null -ne $qaValues.PSObject.Properties[$qaName]) { throw 'Refusing to override existing WebView driver policy.' }
+            }
+        }
+    }
+    foreach ($qaPolicy in $qaPolicies.Keys) {
+        $qaPolicyPath = "HKLM:\Software\Policies\Microsoft\Edge\WebView2\$qaPolicy"
+        New-Item -Path $qaPolicyPath -Force | Out-Null
+        # Record ownership before the write so a partial failure is cleaned up too.
+        $script:qaDriverPolicy += @{ Path = $qaPolicyPath; Value = $qaPolicies[$qaPolicy] }
+        New-ItemProperty -LiteralPath $qaPolicyPath -Name 'crowclaw-desktop.exe' -PropertyType String -Value $qaPolicies[$qaPolicy] | Out-Null
+    }
+}
+
+function Remove-DriverBrowserPolicy {
+    foreach ($qaPolicy in $script:qaDriverPolicy) {
+        $qaValues = Get-ItemProperty -LiteralPath $qaPolicy.Path
+        $qaValue = $qaValues.PSObject.Properties['crowclaw-desktop.exe']
+        if ($null -eq $qaValue) { continue }
+        if ($qaValue.Value -cne $qaPolicy.Value) { throw 'WebView driver policy changed outside this test; refusing to remove it.' }
+        Remove-ItemProperty -LiteralPath $qaPolicy.Path -Name 'crowclaw-desktop.exe'
+        if ($null -ne (Get-ItemProperty -LiteralPath $qaPolicy.Path).PSObject.Properties['crowclaw-desktop.exe']) { throw 'WebView driver policy was not removed.' }
+    }
+    $script:qaDriverPolicy = @()
+}
 
 function Invoke-OwnedInstaller([string]$Path, [string[]]$Arguments) {
     $qaInstallerProcess = Start-Process -FilePath $Path -ArgumentList $Arguments -WindowStyle Hidden -PassThru
@@ -139,6 +183,7 @@ function Get-LaunchDiagnostic {
         exitCode = $(if ($qaApp.HasExited) { $qaApp.ExitCode } else { $null })
         windowObserved = $(if ($qaApp.HasExited) { $false } else { $qaApp.MainWindowHandle -ne 0 })
         processNames = @($qaOwned | Select-Object -ExpandProperty Name -Unique)
+        webViewVersions = @($qaOwned | Where-Object { $_.Name -eq 'msedgewebview2.exe' -and $_.ExecutablePath } | ForEach-Object { (Get-Item -LiteralPath $_.ExecutablePath).VersionInfo.FileVersion } | Select-Object -Unique)
         webViewDebugFlagObserved = @($qaOwned | Where-Object { $_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -match '--remote-debugging-port=9227' }).Count -gt 0
     }
 }
@@ -186,7 +231,7 @@ function Assert-NormalShortcutLaunch {
 function Start-InstalledApp {
     $qaVersion = [string](Get-ItemProperty -LiteralPath $qaRegistration).DisplayVersion
     if ($qaVersion -notin $qaChecks.shortcutUiVersions) { Assert-NormalShortcutLaunch $qaVersion }
-    # CDP gets an explicit child environment and a separate browser cache.
+    # CDP gets a scoped test configuration and a separate browser cache.
     # SQLite still uses the real default installed-app data location.
     $script:qaDebugLaunch++
     $qaStart = [Diagnostics.ProcessStartInfo]::new($qaExecutable)
@@ -194,10 +239,24 @@ function Start-InstalledApp {
     $qaStart.CreateNoWindow = $true
     $qaStart.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $qaStart.WorkingDirectory = $qaInstall
-    $qaStart.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--remote-debugging-port=9227 --remote-debugging-address=127.0.0.1'
-    $qaStart.Environment['WEBVIEW2_USER_DATA_FOLDER'] = Join-Path $qaRoot "webview-driver-$qaDebugLaunch"
+    $qaDriverArguments = '--remote-debugging-port=9227 --remote-debugging-address=127.0.0.1'
+    $qaDriverData = Join-Path $qaRoot "webview-driver-$qaDebugLaunch"
+    if ($qaElevated) {
+        Set-DriverBrowserPolicy $qaDriverArguments $qaDriverData
+        $qaStart.Environment.Remove('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS') | Out-Null
+        $qaStart.Environment.Remove('WEBVIEW2_USER_DATA_FOLDER') | Out-Null
+    } else {
+        $qaStart.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = $qaDriverArguments
+        $qaStart.Environment['WEBVIEW2_USER_DATA_FOLDER'] = $qaDriverData
+    }
     $script:qaApp = [Diagnostics.Process]::Start($qaStart)
     Wait-ForEndpoint 'http://127.0.0.1:9227/json/version'
+    $qaLaunch = Get-LaunchDiagnostic
+    if (-not $qaLaunch.webViewDebugFlagObserved) { throw 'CDP endpoint is not owned by the requested native WebView launch.' }
+    $qaOwnedIds = @(Get-OwnedNativeProcesses | Select-Object -ExpandProperty ProcessId)
+    $qaListeners = @(Get-NetTCPConnection -LocalPort 9227 -State Listen)
+    if (-not $qaListeners.Count -or @($qaListeners | Where-Object { $_.LocalAddress -notin @('127.0.0.1','::1') -or $_.OwningProcess -notin $qaOwnedIds }).Count) { throw 'WebView debugger is not confined to the owned loopback listener.' }
+    $script:qaChecks.driverLaunches += $qaLaunch
     Invoke-NativeUi @('attach', '--cdp=http://127.0.0.1:9227')
     Invoke-NativeUi @('snapshot')
     Invoke-NativeUi @('run-code', 'async (page) => { if(!page.url().startsWith("http://tauri.localhost/") || !await page.evaluate(() => Boolean(window.__TAURI_INTERNALS__))) throw new Error("The installed native Tauri WebView was not attached"); }')
@@ -211,6 +270,7 @@ function Stop-InstalledApp {
         }
     }
     $script:qaApp = $null
+    Remove-DriverBrowserPolicy
 }
 
 function Get-DataHashes {
@@ -384,10 +444,14 @@ try {
     throw $qaFailure
 } finally {
     try { Stop-InstalledApp } catch { Write-Warning $_.Exception.Message }
+    $qaPolicyFailure = $null
+    try { Remove-DriverBrowserPolicy; $qaChecks.driverPolicyRemoved = $true }
+    catch { $qaPolicyFailure = $_; $qaChecks.driverPolicyRemoved = $false; $qaChecks.passed = $false }
     if ($qaModel -and -not $qaModel.HasExited) { $qaModel.Kill(); $qaModel.WaitForExit(5000) | Out-Null }
     # Preserve failed installation/profile evidence for the disposable runner;
     # do not fabricate uninstall acceptance by removing files manually.
     $qaChecks.installationRemains = $qaInstalled
     $qaChecks | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $qaEvidence 'installed-acceptance.json') -Encoding utf8NoBOM
     Pop-Location
+    if ($qaPolicyFailure) { throw $qaPolicyFailure }
 }

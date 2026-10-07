@@ -109,6 +109,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/Test-InstallerIdentity.ps1
+          ./scripts/Test-InstalledDriverPolicy.ps1
           npm run test:verification
           if ($LASTEXITCODE -ne 0) { throw 'Upgrade receipt tests failed.' }
 
