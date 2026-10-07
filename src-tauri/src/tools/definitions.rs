@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::agent::ToolDefinition;
 
-use super::types::{MEMORY_TEXT_MAX_BYTES,MEMORY_QUERY_MAX_BYTES};
+use super::types::{MEMORY_QUERY_MAX_BYTES, MEMORY_TEXT_MAX_BYTES};
 
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     vec![

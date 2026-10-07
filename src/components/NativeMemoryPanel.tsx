@@ -19,8 +19,17 @@ export function NativeMemoryPanel({ gateway }: Props) {
 
   useEffect(() => {
     let active = true;
-    gateway.memoryStatus().then(value => { if (active) setStatus(value); }).catch(cause => { if (active) setError(String(cause)); });
-    return () => { active = false; };
+    let loading = false;
+    const update = async () => {
+      if (loading) return;
+      loading = true;
+      try { const value = await gateway.memoryStatus(); if (active) setStatus(value); }
+      catch (cause) { if (active) setError(String(cause)); }
+      finally { loading = false; }
+    };
+    void update();
+    const timer = setInterval(() => void update(), 2000);
+    return () => { active = false; clearInterval(timer); };
   }, [gateway]);
 
   async function perform(work: () => Promise<void>) {
@@ -50,7 +59,7 @@ export function NativeMemoryPanel({ gateway }: Props) {
       <div className="view-toolbar"><label>Search method <select value={mode} onChange={e => setMode(e.currentTarget.value as MemorySearchMode)}><option value="hybrid">Combined search</option><option value="full_text">Keywords</option><option value="lexical">CrowQuant lexical</option><option value="semantic">Semantic, with offline fallback</option></select></label><label>Source <select value={source} onChange={e => setSource(e.currentTarget.value)}><option value="">All indexed sources</option>{Object.entries(sourceLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></label><button type="submit" className="button button--secondary" disabled={busy || !query.trim()}>Search context</button></div>
     </form>
     <div className="view-toolbar"><button type="button" className="button button--secondary" disabled={busy} onClick={() => void perform(async () => { const report = await gateway.rebuildMemory(); setResult(null); setNotice(`Rebuilt ${report.indexed} sources; ${report.pending} pending. Original conversations and notes were kept.`); })}>Rebuild search index</button><button type="button" className="button button--secondary" disabled={busy} onClick={() => void perform(async () => {
-      const value = await gateway.exportMemory(); const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = "CrowClaw-memory-export.json"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); setNotice("Memory export prepared for saving.");
+      const result = await gateway.exportMemory(); setNotice(result.saved ? `Memory exported to ${result.fileName}.` : "Export cancelled. No file was written.");
     })}>Export memory</button><button type="button" className="button button--secondary" disabled={busy} onClick={() => void perform(async () => { const report = await gateway.syncMemory(); setNotice(`Indexed ${report.indexed}; ${report.pending} pending. ${report.warnings.join(" ")}`); })}>Update index</button></div>
     {error && <p role="alert" className="inline-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {status?.warnings.map(w => <p key={w} role="status">{w}</p>)}{result?.warnings.map(w => <p key={w} role="status">{w}</p>)}

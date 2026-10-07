@@ -317,6 +317,16 @@ impl Storage {
         sources_from(&connection)
     }
 
+    pub fn memory_counts(
+        &self,
+        conversations: bool,
+        actions: bool,
+    ) -> StorageResult<(usize, usize)> {
+        let connection = self.connection()?;
+        let (sources,chunks):(u32,u32)=connection.query_row("SELECT count(DISTINCT s.id),count(c.id) FROM memory_sources s LEFT JOIN memory_chunks c ON c.source_id=s.id WHERE s.state='active' AND (s.source_kind!='conversation_message' OR ?1) AND (s.source_kind!='approved_action' OR ?2)",params![conversations,actions],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        Ok((sources as usize, chunks as usize))
+    }
+
     pub fn memory_source_active(&self, id: &str) -> StorageResult<bool> {
         Ok(self.connection()?.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources s WHERE s.id=?1 AND s.state='active' AND NOT EXISTS(SELECT 1 FROM memory_exclusions x WHERE x.logical_key=s.logical_key))",[id],|r|r.get(0))?)
     }

@@ -49,6 +49,41 @@ fn query(text: &str) -> MemoryQuery {
 }
 
 #[test]
+fn status_counts_sources_once_and_only_counts_enabled_active_chunks() {
+    let (_dir, storage, service) = open();
+    message(&storage, "long", MessageRole::User, &"a".repeat(3500));
+    message(
+        &storage,
+        "short",
+        MessageRole::Assistant,
+        "short telescope note",
+    );
+    let note = service.remember("retained quartz note").unwrap();
+    service.sync(64, &CancellationToken::new()).unwrap();
+    let status = service.status().unwrap();
+    assert_eq!((status.active_sources, status.chunks), (3, 4));
+
+    service
+        .configure(MemorySettings {
+            index_conversations: Some(false),
+            ..MemorySettings::default()
+        })
+        .unwrap();
+    let status = service.status().unwrap();
+    assert_eq!((status.active_sources, status.chunks), (1, 1));
+    let hit = service
+        .search(&query("quartz"), &CancellationToken::new())
+        .unwrap()
+        .hits
+        .remove(0);
+    service.withdraw(&hit.source_id).unwrap();
+    let status = service.status().unwrap();
+    assert_eq!((status.active_sources, status.chunks), (0, 0));
+    assert!(storage.get_crowquant_memory(&note.id).unwrap().is_some());
+    assert_eq!(storage.list_messages("conversation").unwrap().len(), 2);
+}
+
+#[test]
 fn own_conversations_are_searchable_offline_with_authorship() {
     let (_dir, storage, service) = open();
     message(

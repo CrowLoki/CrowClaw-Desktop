@@ -2,12 +2,12 @@ mod actions;
 mod conversations;
 mod crowquant;
 mod error;
-mod migrations;
 mod memory;
+mod migrations;
 mod models;
 mod retention;
-mod settings;
 mod semantic;
+mod settings;
 mod tasks;
 
 use std::fs;

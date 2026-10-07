@@ -211,7 +211,7 @@ export interface CrowClawGateway {
   withdrawMemory(sourceId: string): Promise<void>;
   syncMemory(): Promise<MemoryIndexReport>;
   rebuildMemory(): Promise<MemoryIndexReport>;
-  exportMemory(): Promise<unknown>;
+  exportMemory(): Promise<{ saved: boolean; fileName?: string }>;
   admitFileMemory(actionId: string): Promise<unknown>;
   syncSemanticMemory(): Promise<SemanticIndexReport>;
 }

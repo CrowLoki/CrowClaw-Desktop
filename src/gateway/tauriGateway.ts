@@ -66,7 +66,7 @@ export function createTauriGateway(): CrowClawGateway {
     withdrawMemory: (sourceId: string) => invokeNative<void>(TAURI_COMMANDS.withdrawMemory, { request: { sourceId } }),
     syncMemory: () => invokeNative<MemoryIndexReport>(TAURI_COMMANDS.syncMemory),
     rebuildMemory: () => invokeNative<MemoryIndexReport>(TAURI_COMMANDS.rebuildMemory),
-    exportMemory: () => invokeNative<unknown>(TAURI_COMMANDS.exportMemory),
+    exportMemory: () => invokeNative<{ saved: boolean; fileName?: string }>(TAURI_COMMANDS.exportMemory),
     admitFileMemory: (actionId: string) => invokeNative<unknown>(TAURI_COMMANDS.admitFileMemory, { request: { actionId } }),
     syncSemanticMemory: () => invokeNative<SemanticIndexReport>(TAURI_COMMANDS.syncSemanticMemory),
     bootstrap: () => invokeNative<AppBootstrap>(TAURI_COMMANDS.bootstrap),

@@ -482,7 +482,7 @@ export function createDevelopmentGateway(
     async withdrawMemory(id: string) { withdrawnSources.add(id); },
     async syncMemory() { return {indexed:0,skipped:0,pending:0,warnings:[]}; },
     async rebuildMemory() { return {indexed:0,skipped:0,pending:0,warnings:[]}; },
-    async exportMemory() { return {development:true,settings:clone(memorySettings),notes:clone(crowQuantMemories),withdrawn:[...withdrawnSources]}; },
+    async exportMemory() { throw new Error("File export requires the installed native application."); },
     async admitFileMemory() { throw new Error("Development adapter has no retained real file result. Use the installed application."); },
     async syncSemanticMemory() { return {indexed:0,pending:0,warnings:["Development adapter does not run a real embedding model. Native protocol tests exercise the installed service."]}; },
 

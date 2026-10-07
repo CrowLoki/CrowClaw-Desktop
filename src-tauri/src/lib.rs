@@ -3,6 +3,7 @@ mod app;
 pub mod crowquant;
 mod crowquant_memory;
 pub mod memory;
+mod memory_export;
 pub mod startup;
 pub mod storage;
 pub mod tools;

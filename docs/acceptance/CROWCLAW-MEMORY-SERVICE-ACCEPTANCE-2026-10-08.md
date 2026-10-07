@@ -109,6 +109,64 @@ No forced shutdown was performed. Ollama's endpoint remained stopped.
 
 ## Remaining acceptance
 
+### Native candidate checkpoint (2026-10-08)
+
+The first Alpha 4 candidate was built from `1e504f0`. Its NSIS SHA-256 was
+`b76f34bd6bf0395f047f802550a738577d2523c69dea6434c362c026151984b5`;
+the release executable SHA-256 was
+`a3b31d2918f0d619a4cedd8acfbE68cb29661b8bb222ffd529de82d2f14cf667`.
+The executable, not the installer, was launched with a separate SQLite/WebView
+profile. Alpha 3 registration, shortcuts and the normal profile were not used.
+
+Playwright attached to the real Tauri WebView2, not a development adapter. A
+synthetic loopback test model supplied deterministic tool calls and embeddings;
+that model is fixture evidence, not a model-quality claim. Windows UI Automation
+operated only the candidate's native folder dialog.
+
+Verified in that native window:
+
+- Remember denied: no denied-sentinel CrowQuant row; two approved notes stored.
+- Memory view: filtered user-note recall, authorship and semantic match labels.
+- Semantic settings: explicit fixture profile, three dimensions, stored vectors.
+- Agent recall: denied search returned no memory result; approved search returned
+  the quantum note as the top source-bound result.
+- User-selected fixture folder: separate directory-list and exact-file approval;
+  the response contained the actual basil-before-sunrise fixture text.
+- Tasks: cancel during the delayed provider response reached `Cancelled` with
+  zero active tasks. Two earlier delayed runs completed before automation could
+  click Cancel; those are not counted as cancellation acceptance.
+
+Native export **failed**: WebView2's Downloads Hub displayed `Couldn't download`.
+The source fix uses a native Save dialog and a staged/synced file followed by
+rename; cancellation writes nothing, and the UI reports success only after save.
+The source test checks replacement and preservation on a failed destination.
+Rebuilt native export acceptance is still pending at this checkpoint.
+
+The frontend suite now passes 18 tests, including export cancellation/success and
+background-count refresh/unmount cleanup. The production frontend builds.
+Vitest is updated to 5.0.3 and vulnerable build/test transitive packages are
+patched; `npm audit --audit-level=low` reports zero advisories.
+
+The default Rust run passed library (46), agent (23), and offline memory (18)
+targets, but failed these three semantic tests:
+
+- `cancellation_and_disable_discard_inflight_embeddings` (fixture-request wait);
+- `semantic_paraphrase_retrieval_persists_and_offline_search_survives_outage`
+  (embedding connection deadline);
+- `shared_service_serializes_requests_and_cancellation_releases_queue`
+  (fixture-request wait).
+
+The unchanged test binary passed semantic 10/10 with `--test-threads=1`, and the
+whole suite then passed 104/104 with that setting, including storage 7/7. This
+does not resolve the default gate. The native app also intermittently timed out
+against its still-running fixture; later requests succeeded without a restart.
+Three direct Node HTTP probes to the same listener returned 200 in 16/3/2 ms.
+These observations do not establish the Windows transport root cause. The
+release wrapper retains its normal test command; no failure is hidden by changing
+it to a serial run.
+
+### Outstanding gates
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source

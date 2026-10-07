@@ -210,7 +210,7 @@ impl ToolExecutor {
             .memory_backend
             .as_ref()
             .ok_or(ToolError::MemoryUnavailable)?;
-        let response=backend.search_async(query,limit,cancellation).await?;
+        let response = backend.search_async(query, limit, cancellation).await?;
         Ok(ToolOutput::MemorySearch {
             query: query.into(),
             results: response.results,

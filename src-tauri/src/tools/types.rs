@@ -199,7 +199,9 @@ impl ToolRequest {
                 if query.len() > MEMORY_QUERY_MAX_BYTES {
                     return Err(ToolError::InvalidRequest {
                         tool_name: tool_name.into(),
-                        message: format!("query cannot exceed {MEMORY_QUERY_MAX_BYTES} UTF-8 bytes"),
+                        message: format!(
+                            "query cannot exceed {MEMORY_QUERY_MAX_BYTES} UTF-8 bytes"
+                        ),
                     });
                 }
                 if !(1..=20).contains(&parsed.limit) {
@@ -294,7 +296,7 @@ pub enum ToolOutput {
     MemorySearch {
         query: String,
         results: Vec<MemorySearchMatch>,
-        #[serde(default,skip_serializing_if="Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<String>,
     },
 }
@@ -321,8 +323,11 @@ pub struct MemorySearchMatch {
     pub provenance: Option<Value>,
 }
 
-#[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
-pub struct MemorySearchResponse {pub results:Vec<MemorySearchMatch>,pub warnings:Vec<String>}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MemorySearchResponse {
+    pub results: Vec<MemorySearchMatch>,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]

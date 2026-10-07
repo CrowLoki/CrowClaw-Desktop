@@ -5,6 +5,6 @@ mod semantic;
 mod service;
 mod types;
 
+pub use embedding::{EmbeddingProfile, EmbeddingProvider};
 pub use service::MemoryService;
 pub use types::*;
-pub use embedding::{EmbeddingProfile,EmbeddingProvider};

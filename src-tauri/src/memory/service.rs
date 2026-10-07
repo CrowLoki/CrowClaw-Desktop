@@ -306,16 +306,13 @@ impl MemoryService {
 
     pub fn status(&self) -> Result<MemoryStatus, String> {
         let settings = self.settings()?;
-        let sources = self.storage.memory_sources().map_err(|e| e.to_string())?;
-        let count = self
+        let (source_count, count) = self
             .storage
-            .memory_active_chunks(
+            .memory_counts(
                 settings.index_conversations == Some(true),
                 settings.index_actions,
-                SCAN_MAX_CHUNKS + 1,
             )
-            .map_err(|e| e.to_string())?
-            .len();
+            .map_err(|e| e.to_string())?;
         let mut warnings = self
             .storage
             .memory_index_warnings()
@@ -334,15 +331,7 @@ impl MemoryService {
                     settings.index_actions,
                 )
                 .map_err(|e| e.to_string())?,
-            active_sources: sources
-                .iter()
-                .filter(|s| {
-                    s.state == "active"
-                        && (s.source_kind != "conversation_message"
-                            || settings.index_conversations == Some(true))
-                        && (s.source_kind != "approved_action" || settings.index_actions)
-                })
-                .count(),
+            active_sources: source_count,
             settings,
             chunks: count,
             warnings,

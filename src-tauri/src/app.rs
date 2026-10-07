@@ -133,9 +133,13 @@ impl AppState {
                     Ok(Ok(report)) if report.pending > 0 && report.warnings.is_empty() => 50,
                     _ => 2000,
                 };
-                if shutdown.is_cancelled() {break;}
-                if let Ok(report)=memory.sync_semantic(&shutdown).await {
-                    if report.indexed>0 && report.pending>0 {delay=50;}
+                if shutdown.is_cancelled() {
+                    break;
+                }
+                if let Ok(report) = memory.sync_semantic(&shutdown).await {
+                    if report.indexed > 0 && report.pending > 0 {
+                        delay = 50;
+                    }
                 }
                 tokio::select! {
                     _=shutdown.cancelled()=>break,
@@ -878,7 +882,10 @@ pub async fn crowclaw_memory_search(
     state: State<'_, AppState>,
     request: MemoryQuery,
 ) -> Result<MemorySearchResult, String> {
-    state.memory.search_async(&request, &CancellationToken::new()).await
+    state
+        .memory
+        .search_async(&request, &CancellationToken::new())
+        .await
 }
 
 #[derive(Deserialize)]
@@ -914,11 +921,31 @@ pub async fn crowclaw_memory_rebuild(state: State<'_, AppState>) -> Result<Index
 }
 
 #[tauri::command]
-pub fn crowclaw_memory_export(state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn crowclaw_memory_export(state: State<'_, AppState>) -> Result<Value, String> {
+    let destination = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Export CrowClaw memory")
+            .set_file_name("CrowClaw-memory-export.json")
+            .add_filter("JSON", &["json"])
+            .save_file()
+    })
+    .await
+    .map_err(|_| "Could not open the export dialog")?;
+    let Some(destination) = destination else {
+        return Ok(json!({"saved":false}));
+    };
     let export = state.storage.export_all().map_err(display_error)?;
-    Ok(
-        json!({"schemaVersion":export.schema_version,"exportedAtMs":export.exported_at_ms,"sources":export.memory_sources,"chunks":export.memory_chunks,"exclusions":export.memory_exclusions,"embeddingProfiles":export.memory_embedding_profiles,"vectors":export.memory_vectors}),
-    )
+    let value = json!({"schemaVersion":export.schema_version,"exportedAtMs":export.exported_at_ms,"sources":export.memory_sources,"chunks":export.memory_chunks,"exclusions":export.memory_exclusions,"embeddingProfiles":export.memory_embedding_profiles,"vectors":export.memory_vectors});
+    let name = destination
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::memory_export::save_json(&destination, &value)
+    })
+    .await
+    .map_err(|_| "Memory export task failed")??;
+    Ok(json!({"saved":true,"fileName":name}))
 }
 
 #[derive(Deserialize)]
@@ -936,7 +963,9 @@ pub fn crowclaw_memory_admit_file(
 }
 
 #[tauri::command]
-pub async fn crowclaw_memory_semantic_sync(state:State<'_,AppState>)->Result<crate::memory::SemanticIndexReport,String> {
+pub async fn crowclaw_memory_semantic_sync(
+    state: State<'_, AppState>,
+) -> Result<crate::memory::SemanticIndexReport, String> {
     state.memory.sync_semantic(&state.memory_shutdown).await
 }
 
@@ -1999,7 +2028,10 @@ mod tests {
         assert!(details.contains("connected model and approved-action audit"));
         assert!(details.contains("indexed conversations"));
         assert!(details.contains("source/authorship"));
-        assert_eq!(action_target("search_memory", &search),"CrowClaw indexed conversations and local memory");
+        assert_eq!(
+            action_target("search_memory", &search),
+            "CrowClaw indexed conversations and local memory"
+        );
     }
 
     #[test]
