@@ -344,6 +344,69 @@ acceptance. The independent harness review was integrated and closed.
 
 ### Outstanding acceptance
 
+### Reviewed schema-5 native follow-up
+
+The current release executable was rebuilt from the product source shared by
+`8466fac` and `2ce34a1` (their difference is test policy and checkpoint text),
+SHA-256 `1CE3CA6CB2BFE8EF179D6040A446554E324DD520866D4D4937D2A16A0033BD93`.
+It opened only the existing synthetic Alpha 4 profile and migrated that profile
+to schema 5. The actual WebView/native Save dialog exported 106,493 bytes with
+SHA-256 `9C45D26CA6C92E5E1707E1D3ECBD3F0306AED6E88B51A7D2CE39F86CC3EC1032`.
+The parsed export contains two canonical notes, one retained conversation with
+its messages, seven actions, ten tasks and nineteen audit entries, alongside
+memory settings and derived source data. The withdrawn quantum note remains
+present as a canonical original; unrelated settings are absent. The app showed
+the native export-success notice.
+
+With the model fixture stopped, the real UI rebuilt the index, returned no
+`user_note` result for the withdrawn coherence note, and returned the original
+approved basil file snapshot through keyword search. The screenshot was visually
+inspected. The app then closed normally. All three normal Alpha 3 SQLite/WAL/SHM
+hashes still matched the pre-test baseline. This closes the expanded native-export
+gap above; it is not a new installed-artifact or real-model acceptance claim.
+
+### Hosted elevated-launch repair
+
+Run [37660605623](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37660605623)
+passed the build, but both fresh/upgrade receipts showed a normal native window
+and no requested WebView debugging flag. The same failure affected the unchanged
+published Alpha 3 baseline. [GitHub's Windows runner privileges](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+and [Microsoft's elevated WebView host rules](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security#for-an-elevated-host-app-use-appropriate-override-flags)
+explain why explicit child environment flags alone are insufficient. The harness
+uses only app-specific HKLM test policy on elevated disposable runners, verifies
+an owned loopback listener, and removes its own values after each launch/failure.
+Non-elevated hosts retain the child-environment route. No product flags, local
+registry changes, runtime downgrade or security-control changes were introduced.
+
+Independent review caught shared-key recreation by `New-Item -Force`; the corrected
+in-memory registry test reproduced the loss before the fix. Policy creation now
+preserves existing keys/other applications. The reviewer rechecked the remedy
+and closed with no remaining findings. Run `37698159044` was cancelled during
+build before installed acceptance. Replacement run
+[37698471213](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37698471213)
+tested `2ce34a1`. Its build and source tests passed with no build annotations.
+Both installed runners confirmed elevation, WebView `153.0.4234.48`, the requested
+debug flag, owned loopback CDP, normal onboarding, and removal of the test policy.
+The upgrade runner also created two Alpha 3 conversations, four messages and two
+notes, then launched the upgraded Alpha 4 UI. This proves the original CDP failure
+is repaired. Both jobs subsequently failed on the same multiline UI assertion
+program with `SyntaxError: Unexpected token ')'`; their failure annotations and
+logs were inspected. Neither job passed the complete installed lifecycle.
+
+The latter error was reproduced through the actual Windows `npx.cmd` wrapper:
+an inline multiline program is truncated at the shell boundary even though the
+original text passes JavaScript syntax checks. The driver now uses Playwright
+CLI's supported `run-code --filename` input. The exact formerly failing program,
+with an early read-only sentinel, parsed/executed through `npx.cmd` using a script
+path containing spaces. No CLI/runtime downgrade or changed app assertion was
+used. The same onboarding, two-conversation/two-note seeding, source/provenance
+assertions and offline restart passed through the actual CMD wrapper in a new
+isolated native profile. Both the app and fixture server were stopped afterward.
+This does not exercise local installer registration: the hosted full-lifecycle
+rerun remains required.
+
+### Remaining acceptance boundaries
+
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
   and 740 ms combined search. Each query ranked the known synthetic source

@@ -98,6 +98,7 @@ $qaChecks.driverConfiguration = $(if ($qaElevated) { 'app-specific-HKLM' } else 
 $qaChecks.driverLaunches = @()
 $qaDriverPolicy = @()
 $qaDebugLaunch = 0
+$qaUiCommandIndex = 0
 
 function Set-DriverBrowserPolicy([string]$Arguments, [string]$DataFolder) {
     if (-not $qaElevated) { return }
@@ -148,6 +149,15 @@ function Invoke-OwnedInstaller([string]$Path, [string[]]$Arguments) {
 }
 
 function Invoke-NativeUi([string[]]$Arguments) {
+    if ($Arguments[0] -eq 'run-code') {
+        if ($Arguments.Count -ne 2) { throw 'Expected exactly one native UI program.' }
+        # npx.cmd on Windows truncates multiline inline JavaScript. Use the
+        # CLI's native file input so shell quoting cannot alter the program.
+        $script:qaUiCommandIndex++
+        $qaProgramFile = Join-Path $qaRoot "ui-command-$qaUiCommandIndex.js"
+        [IO.File]::WriteAllText($qaProgramFile, $Arguments[1], [Text.UTF8Encoding]::new($false))
+        $Arguments = @('run-code', "--filename=$qaProgramFile")
+    }
     $qaUiOutput = & npx --yes --package '@playwright/cli@0.1.22' playwright-cli -s=crowclaw-installed-ci @Arguments 2>&1
     if ($LASTEXITCODE -ne 0 -or ($qaUiOutput -match '^### Error')) {
         $qaUiOutput | Write-Output
