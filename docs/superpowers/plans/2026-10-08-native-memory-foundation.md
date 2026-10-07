@@ -66,7 +66,7 @@ Files: new `memory/embedding.rs`, vector persistence and profile contracts; Memo
 ## Task 4: Integrated delivery and acceptance
 
 - [ ] Run focused tests, all affected Rust/frontend regressions, production build, release-script checks and `git diff --check`.
-- [ ] Benchmark the chosen scan bound without claiming results outside the measured workload.
+- [x] Benchmark the chosen scan bound without claiming results outside the measured workload.
 - [ ] Build the installer and exercise design section 16.4 against a clean profile with donor checkouts unavailable; preserve installed user data.
 - [ ] Record exact passing/failing source, packaged, restart, migration and semantic gates in this checkpoint.
 - [ ] Review the branch, deliver through the existing GitHub workflow using Crow's saved settings, and continue the agreed standalone roadmap from merged source.
@@ -76,6 +76,17 @@ Files: new `memory/embedding.rs`, vector persistence and profile contracts; Memo
 2026-10-08: Crow confirmed the goal is to finish CrowClaw-Desktop and requested God mode integration too. Tasks 1–3 are now implemented on `codex/native-memory-foundation`, extending source checkpoint `d19a14a`: native source/index storage and controls, approved agent recall, plus optional local embeddings with schema 4, profile isolation, offline fallback and cancellation. The full Rust suite passes 98 tests and the frontend passes 16 tests plus production build. A failed-upgrade regression also proves that all intermediate schema changes roll back together while original messages/CrowQuant bytes survive. The actual installed Qwen3 Embedding 0.6B model passed native paraphrase/restart acceptance using synthetic notes and a disposable database; no download or private corpus was used. Exact boundaries, fixture-runtime behavior and temporary-runtime cleanup are recorded in [the service acceptance receipt](../../acceptance/CROWCLAW-MEMORY-SERVICE-ACCEPTANCE-2026-10-08.md).
 
 This is a tested source/local-model checkpoint, not installed-app or release acceptance. Next: measure the scan bound, exercise actual native Windows UI with an isolated application profile, then validate installer/upgrade/restart/export/uninstall and deliver the memory feature. Resolve any missing native testing seam within this app without touching real user data. Main and the separate dependency-security branch are untouched. Continue the wider approved standalone roadmap after memory delivery.
+
+Native acceptance preparation: the candidate is version `0.1.0-alpha.4` and
+supports explicit `--profile-dir` isolation for both SQLite and WebView data.
+Four startup tests pass, including rejection of invalid paths without falling
+back to the normal profile. The 10,000-record native benchmark passed; measured
+times are in the acceptance receipt. Alpha 3 is installed on this host, so do
+not replace its installer registration or open its normal database during the
+candidate test. Build the candidate, exercise its actual WebView against a
+separate profile, then determine the remaining installer-lifecycle gate from
+the available isolated environment. Normal database hashes were captured
+locally before testing.
 
 ## Next standalone capability slices
 

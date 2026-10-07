@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.local
 .test-runtime/
+output/playwright/
+.playwright-cli/
 /release/
 
 # Editor directories and files

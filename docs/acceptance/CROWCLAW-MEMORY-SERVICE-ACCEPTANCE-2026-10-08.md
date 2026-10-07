@@ -109,7 +109,11 @@ No forced shutdown was performed. Ollama's endpoint remained stopped.
 
 ## Remaining acceptance
 
-- Large-history measurements at the declared scan bound.
+- The native debug-build benchmark at the 10,000-chunk bound completed on
+  2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,
+  and 740 ms combined search. Each query ranked the known synthetic source
+  first. The database file was 13,565,952 bytes. These measurements are for
+  this synthetic native-service workload, not UI latency or a general SLA.
 - Actual native desktop rendering and user workflows.
 - Installed upgrade/restart, export-file saving and installer/uninstaller
   acceptance with the other Crow repositories unavailable.
