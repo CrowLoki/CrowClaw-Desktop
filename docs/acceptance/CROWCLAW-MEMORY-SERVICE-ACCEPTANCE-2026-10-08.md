@@ -165,8 +165,6 @@ These observations do not establish the Windows transport root cause. The
 release wrapper retains its normal test command; no failure is hidden by changing
 it to a serial run.
 
-### Outstanding gates
-
 ### Rebuilt native candidate results
 
 `npm run tauri build` succeeded from clean commit
@@ -205,6 +203,38 @@ the first candidate's manifest; the hashes above refer to the rebuilt files in
 `src-tauri/target/release/` and its `bundle/nsis/` subdirectory.
 
 ### Still outstanding
+
+### Follow-up transport investigation and hosted acceptance preparation
+
+The semantic fixture now records accepted connections, received-byte counts,
+complete-request counts and elapsed time on failure. With the old global fixture
+lock retained, one normal semantic run and 12 bounded nine-test repetitions passed.
+The normal full 104-test run also passed while frontend tests/build ran alongside
+it. The lock was then removed: it had not resolved the earlier failures and was
+unnecessary coupling between otherwise independent fixtures.
+
+Without that lock, a bounded repetition reproduced eight failing semantic tests.
+Five fixtures had zero accepted connections, zero request bytes and zero complete
+requests at failure; three received only the first request. This narrows those
+failures to connection establishment/acceptance, not vector decoding or ranking.
+It does not identify an OS, library or security-product cause. A later normal
+full run passed 104/104, still without serial flags or a fixture lock.
+
+The standalone `loopback_probe` example compares 32 requests each using reqwest
+HTTP, Tokio TCP and standard blocking TCP, with an independent bounded standard
+TCP server and no app database. An initial probe-server flaw (accepted Windows
+sockets inherited nonblocking mode) was corrected before interpreting results.
+The corrected comparison passed 32/32 in all three modes. Earlier probe failures
+from that fixture flaw are not evidence of the application defect.
+
+The existing Windows workflow now includes `Test-InstalledCrowClaw.ps1`, guarded
+to fresh GitHub-hosted Windows only. It uses real installed UI and verifies both
+conversations and notes across restart, then uninstalls and compares retained
+database hashes. Local parse and refusal checks passed. The harness was reviewed
+independently read-only; all three material findings were verified and addressed.
+Hosted execution remains pending. No local installation/account state changed.
+
+### Remaining product gates
 
 - The native debug-build benchmark at the 10,000-chunk bound completed on
   2026-10-08: 26,971 ms indexing, 614 ms keyword search, 843 ms lexical search,

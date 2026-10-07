@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempfile::TempDir;
 use tokio::{
@@ -19,28 +19,38 @@ use tokio::{
     net::TcpListener,
 };
 
-// Each standalone fixture is the sole embedding provider in its test. Separate
-// runtimes starting providers concurrently hit reproducible loopback deadlines
-// on the Windows runner. Shared-service queue concurrency is tested explicitly.
-static FIXTURE_OWNER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 struct Fixture {
-    _owner: tokio::sync::MutexGuard<'static, ()>,
     url: String,
     calls: Arc<AtomicUsize>,
+    accepted: Arc<AtomicUsize>,
+    received_bytes: Arc<AtomicUsize>,
+    started: Instant,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        eprintln!(
+            "fixture {} elapsed={}ms accepted={} bytes={} requests={}",
+            self.url,
+            self.started.elapsed().as_millis(),
+            self.accepted.load(Ordering::SeqCst),
+            self.received_bytes.load(Ordering::SeqCst),
+            self.calls.load(Ordering::SeqCst)
+        );
         self.task.abort();
     }
 }
 
 async fn fixture(provider: EmbeddingProvider, mode: &str) -> Fixture {
-    let owner = FIXTURE_OWNER.lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let calls = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let received_bytes = Arc::new(AtomicUsize::new(0));
+    let connections = accepted.clone();
+    let received = received_bytes.clone();
+    let started = Instant::now();
+    let trace_url = url.clone();
     let requests = calls.clone();
     let mode = mode.to_owned();
     let task = tokio::spawn(async move {
@@ -49,6 +59,9 @@ async fn fixture(provider: EmbeddingProvider, mode: &str) -> Fixture {
                 break;
             };
             let requests = requests.clone();
+            let connection = connections.fetch_add(1, Ordering::SeqCst) + 1;
+            let received = received.clone();
+            let trace_url = trace_url.clone();
             let mode = mode.clone();
             let provider = provider.clone();
             tokio::spawn(async move {
@@ -56,6 +69,7 @@ async fn fixture(provider: EmbeddingProvider, mode: &str) -> Fixture {
                 let mut buffer = [0u8; 4096];
                 let body_start = loop {
                     let n = stream.read(&mut buffer).await.unwrap();
+                    received.fetch_add(n, Ordering::SeqCst);
                     if n == 0 {
                         return;
                     }
@@ -125,15 +139,20 @@ async fn fixture(provider: EmbeddingProvider, mode: &str) -> Fixture {
                 };
                 let body = serde_json::to_vec(&output).unwrap();
                 let header=format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len());
-                let _ = stream.write_all(header.as_bytes()).await;
-                let _ = stream.write_all(&body).await;
+                let header_write = stream.write_all(header.as_bytes()).await;
+                let body_write = stream.write_all(&body).await;
+                if header_write.is_err() || body_write.is_err() {
+                    eprintln!("fixture {trace_url} connection={connection} response header={header_write:?} body={body_write:?} elapsed={}ms", started.elapsed().as_millis());
+                }
             });
         }
     });
     Fixture {
-        _owner: owner,
         url,
         calls,
+        accepted,
+        received_bytes,
+        started,
         task,
     }
 }

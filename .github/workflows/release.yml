@@ -116,6 +116,28 @@ jobs:
         shell: pwsh
         run: ./scripts/Collect-ReleaseArtifacts.ps1
 
+      - name: Verify installed candidate and uninstall retention
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath "release/release-manifest.json" -Raw | ConvertFrom-Json
+          $installer = @($manifest.assets | Where-Object { $_.name -like '*.exe' })
+          if ($installer.Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
+          $executableHash = (Get-FileHash -LiteralPath "src-tauri/target/release/crowclaw-desktop.exe" -Algorithm SHA256).Hash
+          ./scripts/Test-InstalledCrowClaw.ps1 `
+            -InstallerPath (Join-Path "release" $installer[0].name) `
+            -ExpectedInstallerSha256 $installer[0].sha256 `
+            -ExpectedExecutableSha256 $executableHash `
+            -ExpectedVersion $manifest.version
+
+      - name: Upload native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: CrowClaw-native-acceptance-${{ github.run_id }}
+          path: output/playwright/*
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Bind public release notes to verified assets
         if: github.event_name == 'push' && github.ref_type == 'tag'
         id: public_notes
