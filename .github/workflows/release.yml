@@ -7,14 +7,19 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: crowclaw-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  windows-release:
+  windows-build:
+    outputs:
+      release_version: ${{ steps.release_identity.outputs.release_version }}
+      release_tag: ${{ steps.release_identity.outputs.release_tag }}
+      release_notes_path: ${{ steps.release_identity.outputs.release_notes_path }}
+      executable_hash: ${{ steps.candidate_identity.outputs.executable_hash }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -100,6 +105,14 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
+      - name: Verify installer identity comparison
+        shell: pwsh
+        run: |
+          ./scripts/Test-InstallerIdentity.ps1
+          ./scripts/Test-InstalledDriverPolicy.ps1
+          npm run test:verification
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade receipt tests failed.' }
+
       - name: Run frontend tests
         run: npm test -- --run
 
@@ -116,44 +129,145 @@ jobs:
         shell: pwsh
         run: ./scripts/Collect-ReleaseArtifacts.ps1
 
+      - name: Bind the unbundled executable identity
+        id: candidate_identity
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -LiteralPath "src-tauri/target/release/crowclaw-desktop.exe" -Algorithm SHA256).Hash
+          "executable_hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload candidate bundle for independent acceptance
+        uses: actions/upload-artifact@v7
+        with:
+          name: CrowClaw-candidate-${{ github.run_id }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  installed-acceptance:
+    name: Installed acceptance (${{ matrix.mode }})
+    needs: windows-build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [fresh, upgrade]
+    steps:
+      - name: Check out the exact verification scripts
+        uses: actions/checkout@v7
+
+      - name: Set up verification Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Download the exact candidate bundle
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: CrowClaw-candidate-${{ github.run_id }}
+          path: release
+
+      - name: Fetch the verified published Alpha 3 upgrade baseline
+        if: matrix.mode == 'upgrade'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP "CrowClaw-alpha3-${{ github.run_id }}"
+          if (Test-Path -LiteralPath $baseline) { throw 'Baseline directory already exists.' }
+          gh release download v0.1.0-alpha.3 --repo '${{ github.repository }}' --pattern 'release-manifest.json' --pattern 'CrowClaw_0.1.0-alpha.3_x64-setup.exe' --dir $baseline
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the published upgrade baseline.' }
+          $manifest = Get-Content -LiteralPath (Join-Path $baseline 'release-manifest.json') -Raw | ConvertFrom-Json
+          $expectedHash = 'c46b2e646410bbb620a20fb94ae743d1538d9093aaf6b043b6bab58b578feb74'
+          $asset = @($manifest.assets | Where-Object { $_.name -eq 'CrowClaw_0.1.0-alpha.3_x64-setup.exe' })
+          if ($manifest.version -ne '0.1.0-alpha.3' -or $manifest.commit -ne '7874429d0316667584589e40213e91cc2e210f8d' -or $asset.Count -ne 1 -or $asset[0].sha256 -ne $expectedHash) { throw 'Published baseline identity changed.' }
+          if ((Get-FileHash -LiteralPath (Join-Path $baseline $asset[0].name) -Algorithm SHA256).Hash -ne $expectedHash) { throw 'Baseline download hash mismatch.' }
+
+      - name: Verify installed candidate and uninstall retention
+        shell: pwsh
+        env:
+          ACCEPTANCE_MODE: ${{ matrix.mode }}
+          EXPECTED_EXECUTABLE_HASH: ${{ needs.windows-build.outputs.executable_hash }}
+          EXPECTED_VERSION: ${{ needs.windows-build.outputs.release_version }}
+        run: |
+          $manifest = Get-Content -LiteralPath "release/release-manifest.json" -Raw | ConvertFrom-Json
+          $head = (git rev-parse HEAD).Trim()
+          if ($manifest.commit -ne $head -or $manifest.version -ne $env:EXPECTED_VERSION) { throw 'Candidate does not match this source/version.' }
+          $installer = @($manifest.assets | Where-Object { $_.name -like '*.exe' })
+          if ($installer.Count -ne 1 -or [IO.Path]::GetFileName($installer[0].name) -ne $installer[0].name) { throw 'Expected exactly one named NSIS installer.' }
+          $parameters = @{
+            InstallerPath = (Join-Path "release" $installer[0].name)
+            ExpectedInstallerSha256 = $installer[0].sha256
+            ExpectedExecutableSha256 = $env:EXPECTED_EXECUTABLE_HASH
+            ExpectedVersion = $manifest.version
+          }
+          if ($env:ACCEPTANCE_MODE -eq 'upgrade') {
+            $parameters.PreviousInstallerPath = Join-Path $env:RUNNER_TEMP "CrowClaw-alpha3-${{ github.run_id }}/CrowClaw_0.1.0-alpha.3_x64-setup.exe"
+            $parameters.PreviousInstallerSha256 = 'c46b2e646410bbb620a20fb94ae743d1538d9093aaf6b043b6bab58b578feb74'
+            $parameters.PreviousVersion = '0.1.0-alpha.3'
+          }
+          ./scripts/Test-InstalledCrowClaw.ps1 @parameters
+
+      - name: Upload native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: CrowClaw-native-acceptance-${{ matrix.mode }}-${{ github.run_id }}
+          path: output/playwright/*
+          if-no-files-found: ignore
+          retention-days: 30
+
+  publish-release:
+    needs: [windows-build, installed-acceptance]
+    if: success() && github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@v7
+
+      - name: Download the accepted candidate bundle
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: CrowClaw-candidate-${{ github.run_id }}
+          path: release
+
       - name: Bind public release notes to verified assets
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         id: public_notes
         shell: pwsh
         env:
-          RELEASE_NOTES_SOURCE: ${{ steps.release_identity.outputs.release_notes_path }}
-          RELEASE_TAG: ${{ steps.release_identity.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.release_identity.outputs.release_version }}
+          RELEASE_NOTES_SOURCE: ${{ needs.windows-build.outputs.release_notes_path }}
+          RELEASE_TAG: ${{ needs.windows-build.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.windows-build.outputs.release_version }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "CrowClaw-$env:RELEASE_TAG-release-notes.md"
           $headCommit = (git rev-parse HEAD).Trim()
-          ./scripts/New-PublicReleaseNotes.ps1 `
-            -SourcePath $env:RELEASE_NOTES_SOURCE `
-            -ManifestPath "release/release-manifest.json" `
-            -OutputPath $output `
-            -RunUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" `
-            -ExpectedVersion $env:RELEASE_VERSION `
-            -ExpectedCommit $headCommit
+          $parameters = @{
+            SourcePath = $env:RELEASE_NOTES_SOURCE
+            ManifestPath = "release/release-manifest.json"
+            OutputPath = $output
+            RunUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            ExpectedVersion = $env:RELEASE_VERSION
+            ExpectedCommit = $headCommit
+          }
+          ./scripts/New-PublicReleaseNotes.ps1 @parameters
           "public_release_notes_path=$output" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload verified release bundle
         uses: actions/upload-artifact@v7
         with:
-          name: CrowClaw-${{ steps.release_identity.outputs.release_tag }}-windows-x64
+          name: CrowClaw-${{ needs.windows-build.outputs.release_tag }}-windows-x64
           path: release/*
           if-no-files-found: error
           retention-days: 30
 
       - name: Publish GitHub release
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release_identity.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.windows-build.outputs.release_tag }}
           RELEASE_NOTES_PATH: ${{ steps.public_notes.outputs.public_release_notes_path }}
         run: |
-          gh release create "$env:RELEASE_TAG" release/* `
-            --verify-tag `
-            --title "CrowClaw $env:RELEASE_TAG" `
-            --notes-file "$env:RELEASE_NOTES_PATH" `
-            --prerelease
+          gh release create "$env:RELEASE_TAG" release/* --verify-tag --title "CrowClaw $env:RELEASE_TAG" --notes-file "$env:RELEASE_NOTES_PATH" --prerelease

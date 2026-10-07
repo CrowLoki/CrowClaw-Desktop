@@ -47,6 +47,20 @@ This repository is intentionally independent. It does not modify or repurpose th
 
 ## Development
 
+### Separate application profiles
+
+The Alpha 4 candidate supports `--profile-dir <absolute-local-directory>`.
+This explicitly selected directory holds both its SQLite database and WebView
+data. A normal launch continues to use the normal Windows application-data
+directory. Invalid profile arguments fail before opening a database; relative,
+drive-root, parent-traversal and network-share targets are rejected.
+
+Use a separate profile for development and acceptance so an unreleased schema
+does not modify an existing installation's data. Alpha 4 is still a candidate;
+the published Alpha 3 release remains the public download identified above.
+
+### Build
+
 Prerequisites: Node.js, npm, Rust, and the Windows requirements for Tauri 2.
 
 ```powershell

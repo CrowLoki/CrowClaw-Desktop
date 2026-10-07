@@ -2,9 +2,11 @@ mod actions;
 mod conversations;
 mod crowquant;
 mod error;
+mod memory;
 mod migrations;
 mod models;
 mod retention;
+mod semantic;
 mod settings;
 mod tasks;
 

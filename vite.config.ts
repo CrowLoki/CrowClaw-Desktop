@@ -30,6 +30,8 @@ export default defineConfig(async () => ({
     },
   },
   test: {
+    // Node-only verification tooling has its own runner, not jsdom/Vitest.
+    include: ["src/**/*.test.{ts,tsx}"],
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,

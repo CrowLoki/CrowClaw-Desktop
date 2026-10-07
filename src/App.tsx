@@ -329,6 +329,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
       )}
       {view === "memory" && (
         <MemoryView
+          gateway={gateway}
           memories={bootstrap.memories}
           listCrowQuantMemories={gateway.listCrowQuantMemories}
           rememberCrowQuant={gateway.rememberCrowQuant}
@@ -350,4 +351,3 @@ export function App({ gateway = defaultGateway }: AppProps) {
     </AppShell>
   );
 }
-

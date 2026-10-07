@@ -16,6 +16,7 @@ import type {
   ModelEndpointDraft,
   SelectedFolder,
   TaskCancellationResult,
+  NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport, SemanticIndexReport,
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
@@ -33,6 +34,15 @@ export const TAURI_COMMANDS = {
   listCrowQuantMemories: "crowclaw_crowquant_list",
   rememberCrowQuant: "crowclaw_crowquant_remember",
   recallCrowQuant: "crowclaw_crowquant_recall",
+  memoryStatus: "crowclaw_memory_status",
+  configureMemory: "crowclaw_memory_configure",
+  searchMemory: "crowclaw_memory_search",
+  withdrawMemory: "crowclaw_memory_withdraw",
+  syncMemory: "crowclaw_memory_sync",
+  rebuildMemory: "crowclaw_memory_rebuild",
+  exportMemory: "crowclaw_memory_export",
+  admitFileMemory: "crowclaw_memory_admit_file",
+  syncSemanticMemory: "crowclaw_memory_semantic_sync",
 } as const;
 
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -50,6 +60,15 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
 
 export function createTauriGateway(): CrowClawGateway {
   return {
+    memoryStatus: () => invokeNative<NativeMemoryStatus>(TAURI_COMMANDS.memoryStatus),
+    configureMemory: (request: MemorySettings) => invokeNative<MemorySettings>(TAURI_COMMANDS.configureMemory, { request }),
+    searchMemory: (request: MemoryQuery) => invokeNative<MemorySearchResult>(TAURI_COMMANDS.searchMemory, { request }),
+    withdrawMemory: (sourceId: string) => invokeNative<void>(TAURI_COMMANDS.withdrawMemory, { request: { sourceId } }),
+    syncMemory: () => invokeNative<MemoryIndexReport>(TAURI_COMMANDS.syncMemory),
+    rebuildMemory: () => invokeNative<MemoryIndexReport>(TAURI_COMMANDS.rebuildMemory),
+    exportMemory: () => invokeNative<{ saved: boolean; fileName?: string }>(TAURI_COMMANDS.exportMemory),
+    admitFileMemory: (actionId: string) => invokeNative<unknown>(TAURI_COMMANDS.admitFileMemory, { request: { actionId } }),
+    syncSemanticMemory: () => invokeNative<SemanticIndexReport>(TAURI_COMMANDS.syncSemanticMemory),
     bootstrap: () => invokeNative<AppBootstrap>(TAURI_COMMANDS.bootstrap),
     discoverEndpoints: () => invokeNative<DiscoveredEndpoint[]>(TAURI_COMMANDS.discoverEndpoints),
     testConnection: (draft: ModelEndpointDraft) =>

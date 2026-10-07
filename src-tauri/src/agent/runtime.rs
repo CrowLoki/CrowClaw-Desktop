@@ -677,6 +677,7 @@ mod tests {
                 text: format!("stored {query} memory"),
                 created_at_ms: 1,
                 score: 0.75,
+                provenance: None,
             }])
         }
     }

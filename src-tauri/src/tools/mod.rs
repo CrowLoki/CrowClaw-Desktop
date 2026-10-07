@@ -11,6 +11,6 @@ pub use executor::{ToolExecutor, ToolPolicy};
 pub use memory::MemoryBackend;
 pub use types::{
     ActionId, ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
-    MemorySearchMatch, ProposedAction, RememberedMemory, ToolExecution, ToolOutput, ToolRequest,
-    MEMORY_TEXT_MAX_BYTES,
+    MemorySearchMatch, MemorySearchResponse, ProposedAction, RememberedMemory, ToolExecution,
+    ToolOutput, ToolRequest, MEMORY_QUERY_MAX_BYTES, MEMORY_TEXT_MAX_BYTES,
 };

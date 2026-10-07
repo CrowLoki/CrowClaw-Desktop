@@ -19,6 +19,7 @@ import type {
   PendingAction,
   SelectedFolder,
   TaskCancellationResult,
+  MemorySettings, MemoryQuery, NativeMemoryHit,
 } from "./contracts";
 
 type DevelopmentGatewayOptions = {
@@ -124,6 +125,8 @@ export function createDevelopmentGateway(
   let counter = 10;
   let firstRun = options.firstRun ?? true;
   let settings = clone(defaultSettings);
+  let memorySettings: MemorySettings = { indexConversations: true, indexActions: false };
+  const withdrawnSources = new Set<string>();
   let connection: ModelConnection | null = firstRun
     ? null
     : {
@@ -461,6 +464,27 @@ export function createDevelopmentGateway(
       settings = clone(nextSettings);
       return clone(settings);
     },
+
+    async memoryStatus() {
+      return { settings: clone(memorySettings), activeSources: crowQuantMemories.length + (memorySettings.indexConversations ? [...conversations.values()].reduce((n,c) => n+c.messages.length,0) : 0), chunks: 0, pending: 0, warnings: ["Development adapter: native persistence and indexing are tested in Rust."] };
+    },
+    async configureMemory(next: MemorySettings) { memorySettings = clone(next); return clone(next); },
+    async searchMemory(query: MemoryQuery) {
+      const candidates: NativeMemoryHit[] = [];
+      if (memorySettings.indexConversations) {
+        for (const conversation of conversations.values()) for (const message of conversation.messages) {
+          candidates.push({chunkId:message.id,sourceId:message.id,sourceKind:"conversation_message",originId:message.id,title:conversation.title,authorship:message.role,text:message.content,createdAtMs:Date.parse(message.createdAt),startByte:0,endByte:new TextEncoder().encode(message.content).length,score:similarityScore(query.query,message.content),channels:[{channel:"development_keyword",rank:1,score:null}]});
+        }
+      }
+      for (const record of crowQuantMemories) candidates.push({chunkId:record.id,sourceId:record.id,sourceKind:"user_note",originId:record.id,title:"Your note",authorship:"user",text:record.text,createdAtMs:Date.parse(record.createdAt),startByte:0,endByte:new TextEncoder().encode(record.text).length,score:similarityScore(query.query,record.text),channels:[{channel:"development_keyword",rank:1,score:null}]});
+      return {hits:candidates.filter(h => !withdrawnSources.has(h.sourceId) && (!query.sourceKind || h.sourceKind===query.sourceKind) && h.score>0).sort((a,b)=>b.score-a.score).slice(0,query.limit),mode:query.mode,warnings:["Development adapter results; installed search uses native SQLite and CrowQuant."]};
+    },
+    async withdrawMemory(id: string) { withdrawnSources.add(id); },
+    async syncMemory() { return {indexed:0,skipped:0,pending:0,warnings:[]}; },
+    async rebuildMemory() { return {indexed:0,skipped:0,pending:0,warnings:[]}; },
+    async exportMemory() { throw new Error("File export requires the installed native application."); },
+    async admitFileMemory() { throw new Error("Development adapter has no retained real file result. Use the installed application."); },
+    async syncSemanticMemory() { return {indexed:0,pending:0,warnings:["Development adapter does not run a real embedding model. Native protocol tests exercise the installed service."]}; },
 
     async listCrowQuantMemories(): Promise<CrowQuantMemory[]> {
       await pause();

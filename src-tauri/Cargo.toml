@@ -1,6 +1,6 @@
 [package]
 name = "crowclaw-desktop"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "CrowClaw local-first Windows desktop AI agent"
 authors = ["Crow"]
 edition = "2021"
@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
@@ -42,3 +43,10 @@ path = "src/storage/storage_tests.rs"
 name = "agent_runtime"
 path = "src/agent/test_harness.rs"
 
+[[test]]
+name = "memory_foundation"
+path = "tests/memory_foundation.rs"
+
+[[test]]
+name = "semantic_memory"
+path = "tests/semantic_memory.rs"

@@ -37,6 +37,11 @@ impl Storage {
             actions: list_actions_from(&transaction, None, None)?,
             action_audit: list_action_audit_from(&transaction, None)?,
             crowquant_memories: list_crowquant_memories_from(&transaction)?,
+            memory_sources: super::memory::sources_from(&transaction)?,
+            memory_chunks: super::memory::chunks_from(&transaction)?,
+            memory_exclusions: super::memory::exclusions_from(&transaction)?,
+            memory_embedding_profiles: super::semantic::profiles_from(&transaction)?,
+            memory_vectors: super::semantic::vectors_from(&transaction)?,
         };
         transaction.commit()?;
         Ok(export)
@@ -69,6 +74,8 @@ impl Storage {
         transaction.execute_batch(
             r#"
             DELETE FROM action_audit;
+            DELETE FROM memory_vectors;
+            DELETE FROM memory_embedding_profiles;
             DELETE FROM proposed_actions;
             DELETE FROM messages;
             DELETE FROM tasks;
@@ -76,6 +83,11 @@ impl Storage {
             DELETE FROM provider_profiles;
             DELETE FROM settings;
             DELETE FROM crowquant_memories;
+            DELETE FROM memory_chunks;
+            DELETE FROM memory_sources;
+            DELETE FROM memory_jobs;
+            DELETE FROM memory_exclusions;
+            DELETE FROM memory_job_errors;
             DELETE FROM sqlite_sequence WHERE name = 'action_audit';
             "#,
         )?;
@@ -100,7 +112,12 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM tasks) +
              (SELECT COUNT(*) FROM proposed_actions) +
              (SELECT COUNT(*) FROM action_audit) +
-             (SELECT COUNT(*) FROM crowquant_memories)"#,
+             (SELECT COUNT(*) FROM crowquant_memories) +
+             (SELECT COUNT(*) FROM memory_sources) +
+             (SELECT COUNT(*) FROM memory_chunks) +
+             (SELECT COUNT(*) FROM memory_exclusions) +
+             (SELECT COUNT(*) FROM memory_embedding_profiles) +
+             (SELECT COUNT(*) FROM memory_vectors)"#,
         [],
         |row| row.get(0),
     )?;

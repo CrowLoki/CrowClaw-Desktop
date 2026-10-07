@@ -77,7 +77,7 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+  if (request.method !== "POST" || !["/v1/chat/completions", "/v1/embeddings"].includes(request.url)) {
     json(response, 404, { error: { message: "not found", type: "not_found" } });
     return;
   }
@@ -94,6 +94,22 @@ const server = http.createServer((request, response) => {
       body = JSON.parse(raw);
     } catch {
       json(response, 400, { error: { message: "invalid JSON", type: "invalid_request" } });
+      return;
+    }
+
+    if (request.url === "/v1/embeddings") {
+      const texts = Array.isArray(body.input) ? body.input : [body.input];
+      if (!texts.length || texts.length > 8 || texts.some(text => typeof text !== "string")) {
+        json(response, 400, { error: "invalid embedding batch" });
+        return;
+      }
+      json(response, 200, {
+        model: body.model,
+        data: texts.map((text, index) => ({ index, embedding:
+          /car|vehicle|automobile/i.test(text) ? [1, 0, 0] :
+          /qubit|quantum|phase|coherence/i.test(text) ? [0, 1, 0] : [0, 0, 1]
+        })),
+      });
       return;
     }
 
@@ -171,6 +187,12 @@ const server = http.createServer((request, response) => {
     }
 
     const content = String(latest.content ?? "");
+    if (content.trim().toUpperCase() === "CANCEL FAST") {
+      setTimeout(() => {
+        if (!response.destroyed) json(response, 200, completion({ role: "assistant", content: "Delayed acceptance result" }));
+      }, 15000);
+      return;
+    }
     const memoryScenario = memoryScenarios[content.trim().toUpperCase()];
     if (memoryScenario) {
       if (!hasTool(body, memoryScenario.name)) {
