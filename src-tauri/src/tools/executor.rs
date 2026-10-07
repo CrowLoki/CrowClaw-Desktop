@@ -174,7 +174,7 @@ impl ToolExecutor {
                 self.remember_memory(action_id, &text, cancellation)
             }
             ToolRequest::SearchMemory { query, limit } => {
-                self.search_memory(&query, limit, cancellation)
+                self.search_memory(&query, limit, cancellation).await
             }
         }
     }
@@ -197,7 +197,7 @@ impl ToolExecutor {
         })
     }
 
-    fn search_memory(
+    async fn search_memory(
         &self,
         query: &str,
         limit: usize,
@@ -210,9 +210,11 @@ impl ToolExecutor {
             .memory_backend
             .as_ref()
             .ok_or(ToolError::MemoryUnavailable)?;
+        let response=backend.search_async(query,limit,cancellation).await?;
         Ok(ToolOutput::MemorySearch {
             query: query.into(),
-            results: backend.search(query, limit, cancellation)?,
+            results: response.results,
+            warnings: response.warnings,
         })
     }
 

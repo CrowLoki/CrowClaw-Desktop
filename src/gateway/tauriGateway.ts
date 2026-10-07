@@ -16,7 +16,7 @@ import type {
   ModelEndpointDraft,
   SelectedFolder,
   TaskCancellationResult,
-  NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport,
+  NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport, SemanticIndexReport,
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
@@ -42,6 +42,7 @@ export const TAURI_COMMANDS = {
   rebuildMemory: "crowclaw_memory_rebuild",
   exportMemory: "crowclaw_memory_export",
   admitFileMemory: "crowclaw_memory_admit_file",
+  syncSemanticMemory: "crowclaw_memory_semantic_sync",
 } as const;
 
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -67,6 +68,7 @@ export function createTauriGateway(): CrowClawGateway {
     rebuildMemory: () => invokeNative<MemoryIndexReport>(TAURI_COMMANDS.rebuildMemory),
     exportMemory: () => invokeNative<unknown>(TAURI_COMMANDS.exportMemory),
     admitFileMemory: (actionId: string) => invokeNative<unknown>(TAURI_COMMANDS.admitFileMemory, { request: { actionId } }),
+    syncSemanticMemory: () => invokeNative<SemanticIndexReport>(TAURI_COMMANDS.syncSemanticMemory),
     bootstrap: () => invokeNative<AppBootstrap>(TAURI_COMMANDS.bootstrap),
     discoverEndpoints: () => invokeNative<DiscoveredEndpoint[]>(TAURI_COMMANDS.discoverEndpoints),
     testConnection: (draft: ModelEndpointDraft) =>

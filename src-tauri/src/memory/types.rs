@@ -13,6 +13,8 @@ pub struct MemorySettings {
     /// None is the upgrade choice, before any historical indexing is allowed.
     pub index_conversations: Option<bool>,
     pub index_actions: bool,
+    #[serde(default)]
+    pub embedding: Option<super::EmbeddingProfile>,
 }
 
 impl Default for MemorySettings {
@@ -20,6 +22,7 @@ impl Default for MemorySettings {
         Self {
             index_conversations: Some(true),
             index_actions: false,
+            embedding: None,
         }
     }
 }
@@ -31,6 +34,7 @@ pub enum SearchMode {
     Hybrid,
     FullText,
     Lexical,
+    Semantic,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +87,25 @@ pub struct MemoryStatus {
     pub settings: MemorySettings,
     pub active_sources: usize,
     pub chunks: usize,
+    pub pending: usize,
+    pub warnings: Vec<String>,
+    pub semantic: SemanticStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticStatus {
+    pub state: String,
+    pub profile_id: Option<String>,
+    pub vectors: usize,
+    pub pending: usize,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticIndexReport {
+    pub indexed: usize,
     pub pending: usize,
     pub warnings: Vec<String>,
 }

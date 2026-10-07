@@ -9,17 +9,21 @@ use crate::{
     crowquant_memory::{remembered_memory, CrowQuantMemoryService},
     storage::{ActionStatus, CrowQuantMemory, MemoryCandidate, NativeMemorySource, Storage},
     tools::{
-        ActionId, MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError, ToolExecution,
-        ToolOutput,
+        ActionId, MemoryBackend, MemorySearchMatch, MemorySearchResponse, RememberedMemory,
+        ToolError, ToolExecution, ToolOutput,
     },
 };
 
 const SETTINGS_KEY: &str = "memory_settings";
 
 pub struct MemoryService {
-    storage: Arc<Storage>,
+    pub(super) storage: Arc<Storage>,
     initial_choice: Option<bool>,
     indexing: Mutex<()>,
+    pub(super) configuration: Mutex<()>,
+    pub(super) semantic_gate: tokio::sync::Semaphore,
+    pub(super) semantic_cancellation: Mutex<CancellationToken>,
+    pub(super) semantic_health: Mutex<super::semantic::SemanticHealth>,
 }
 
 impl MemoryService {
@@ -32,6 +36,10 @@ impl MemoryService {
             storage,
             initial_choice,
             indexing: Mutex::new(()),
+            configuration: Mutex::new(()),
+            semantic_gate: tokio::sync::Semaphore::new(1),
+            semantic_cancellation: Mutex::new(CancellationToken::new()),
+            semantic_health: Mutex::new(Default::default()),
         }
     }
 
@@ -43,13 +51,41 @@ impl MemoryService {
             .unwrap_or(MemorySettings {
                 index_conversations: self.initial_choice,
                 index_actions: false,
+                embedding: None,
             }))
     }
 
-    pub fn configure(&self, settings: MemorySettings) -> Result<MemorySettings, String> {
+    pub fn configure(&self, mut settings: MemorySettings) -> Result<MemorySettings, String> {
+        let _guard = self
+            .configuration
+            .lock()
+            .map_err(|_| "Memory configuration lock poisoned")?;
+        let previous = self.settings()?;
+        if let Some(profile) = settings.embedding.as_mut() {
+            *profile = profile.normalized()?;
+            self.storage
+                .memory_save_embedding_profile(
+                    &profile.id()?,
+                    &serde_json::to_value(&profile)
+                        .map_err(|_| "Cannot encode embedding profile")?,
+                )
+                .map_err(|e| e.to_string())?;
+        }
         self.storage
             .set_setting(SETTINGS_KEY, &settings)
             .map_err(|e| e.to_string())?;
+        if previous != settings {
+            let mut token = self
+                .semantic_cancellation
+                .lock()
+                .map_err(|_| "Semantic cancellation lock poisoned")?;
+            token.cancel();
+            *token = CancellationToken::new();
+        }
+        *self
+            .semantic_health
+            .lock()
+            .map_err(|_| "Semantic status lock poisoned")? = Default::default();
         Ok(settings)
     }
 
@@ -290,6 +326,7 @@ impl MemoryService {
             ));
         }
         Ok(MemoryStatus {
+            semantic: self.semantic_status(&settings)?,
             pending: self
                 .storage
                 .memory_pending(
@@ -313,6 +350,7 @@ impl MemoryService {
     }
 }
 
+#[async_trait::async_trait]
 impl MemoryBackend for MemoryService {
     fn remember(
         &self,
@@ -367,5 +405,38 @@ impl MemoryBackend for MemoryService {
             id:if ["legacy_crowquant","user_note"].contains(&h.source_kind.as_str()) {h.origin_id.clone()}else{h.chunk_id.clone()},text:h.text,created_at_ms:h.created_at_ms,score:h.score,
             provenance:Some(serde_json::json!({"sourceId":h.source_id,"originId":h.origin_id,"sourceKind":h.source_kind,"authorship":h.authorship,"channels":h.channels,"startByte":h.start_byte,"endByte":h.end_byte,"historicalContext":true})),
         }).collect())
+    }
+
+    async fn search_async(
+        &self,
+        query: &str,
+        limit: usize,
+        token: &CancellationToken,
+    ) -> Result<MemorySearchResponse, ToolError> {
+        let result = MemoryService::search_async(
+            self,
+            &MemoryQuery {
+                query: query.into(),
+                limit,
+                source_kind: None,
+                mode: super::SearchMode::Hybrid,
+            },
+            token,
+        )
+        .await
+        .map_err(|message| {
+            if token.is_cancelled() {
+                ToolError::Cancelled
+            } else {
+                ToolError::MemoryOperation {
+                    operation: "search".into(),
+                    message,
+                }
+            }
+        })?;
+        Ok(MemorySearchResponse {warnings:result.warnings,results:result.hits.into_iter().map(|h|MemorySearchMatch {
+            id:if ["legacy_crowquant","user_note"].contains(&h.source_kind.as_str()){h.origin_id.clone()}else{h.chunk_id.clone()},text:h.text,created_at_ms:h.created_at_ms,score:h.score,
+            provenance:Some(serde_json::json!({"sourceId":h.source_id,"originId":h.origin_id,"sourceKind":h.source_kind,"authorship":h.authorship,"channels":h.channels,"startByte":h.start_byte,"endByte":h.end_byte,"historicalContext":true})),
+        }).collect()})
     }
 }

@@ -7,6 +7,7 @@ mod memory;
 mod models;
 mod retention;
 mod settings;
+mod semantic;
 mod tasks;
 
 use std::fs;

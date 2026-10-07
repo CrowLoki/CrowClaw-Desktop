@@ -46,3 +46,7 @@ path = "src/agent/test_harness.rs"
 [[test]]
 name = "memory_foundation"
 path = "tests/memory_foundation.rs"
+
+[[test]]
+name = "semantic_memory"
+path = "tests/semantic_memory.rs"

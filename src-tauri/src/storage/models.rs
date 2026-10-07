@@ -301,6 +301,10 @@ pub struct StorageExport {
     pub memory_chunks: Vec<NativeMemoryChunk>,
     #[serde(default)]
     pub memory_exclusions: Vec<String>,
+    #[serde(default)]
+    pub memory_embedding_profiles: Vec<StoredEmbeddingProfile>,
+    #[serde(default)]
+    pub memory_vectors: Vec<StoredMemoryVector>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -341,6 +345,26 @@ pub struct MemoryCandidate {
     pub authorship: String,
     pub text: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredEmbeddingProfile {
+    pub id: String,
+    pub config: Value,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredMemoryVector {
+    pub chunk_id: String,
+    pub profile_id: String,
+    pub dimensions: u32,
+    pub codec: String,
+    pub data: Vec<u8>,
+    pub content_hash: String,
+    pub quarantined: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

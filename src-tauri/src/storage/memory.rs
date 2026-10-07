@@ -24,7 +24,7 @@ fn source_row(row: &Row<'_>) -> rusqlite::Result<NativeMemorySource> {
     })
 }
 
-fn chunk_row(row: &Row<'_>) -> rusqlite::Result<NativeMemoryChunk> {
+pub(super) fn chunk_row(row: &Row<'_>) -> rusqlite::Result<NativeMemoryChunk> {
     Ok(NativeMemoryChunk {
         id: row.get(0)?,
         source_id: row.get(1)?,

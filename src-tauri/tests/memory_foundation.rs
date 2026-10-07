@@ -8,6 +8,8 @@ use crowclaw_desktop_lib::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+const RESTORE_ALPHA_TWO:&str="DROP TABLE memory_vectors; DROP TABLE memory_embedding_profiles; DROP TRIGGER memory_message_insert; DROP TRIGGER memory_message_update; DROP TRIGGER memory_message_delete; DROP TRIGGER memory_conversation_title; DROP TRIGGER memory_crowquant_insert; DROP TRIGGER memory_crowquant_delete; DROP TRIGGER memory_action_success; DROP TRIGGER memory_action_delete; DROP TRIGGER memory_chunk_insert; DROP TRIGGER memory_chunk_delete; DROP TRIGGER memory_chunk_update; DROP TABLE memory_fts; DROP TABLE memory_chunks; DROP TABLE memory_sources; DROP TABLE memory_exclusions; DROP TABLE memory_jobs; DROP TABLE memory_job_errors; DELETE FROM settings WHERE key='memory_settings'; PRAGMA user_version=2;";
+
 fn open() -> (TempDir, Arc<Storage>, MemoryService) {
     let dir = TempDir::new().unwrap();
     let storage = Arc::new(Storage::open(dir.path()).unwrap());
@@ -426,10 +428,13 @@ fn schema_two_upgrade_preserves_original_message_and_crowquant_data() {
     let connection = rusqlite::Connection::open(&path).unwrap();
     // The disposable fixture is restored to schema 2, preserving all canonical
     // tables/bytes. No user database or checkout data is touched.
-    connection.execute_batch("DROP TRIGGER memory_message_insert; DROP TRIGGER memory_message_update; DROP TRIGGER memory_message_delete; DROP TRIGGER memory_conversation_title; DROP TRIGGER memory_crowquant_insert; DROP TRIGGER memory_crowquant_delete; DROP TRIGGER memory_action_success; DROP TRIGGER memory_action_delete; DROP TRIGGER memory_chunk_insert; DROP TRIGGER memory_chunk_delete; DROP TRIGGER memory_chunk_update; DROP TABLE memory_fts; DROP TABLE memory_chunks; DROP TABLE memory_sources; DROP TABLE memory_exclusions; DROP TABLE memory_jobs; DROP TABLE memory_job_errors; DELETE FROM settings WHERE key='memory_settings'; PRAGMA user_version=2;").unwrap();
+    connection.execute_batch(RESTORE_ALPHA_TWO).unwrap();
     drop(connection);
     let reopened = Arc::new(Storage::open(dir.path()).unwrap());
-    assert_eq!(reopened.schema_version().unwrap(), 3);
+    assert_eq!(
+        reopened.schema_version().unwrap(),
+        crowclaw_desktop_lib::storage::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(
         reopened.get_crowquant_memory(&old.id).unwrap().unwrap(),
         before
@@ -442,6 +447,68 @@ fn schema_two_upgrade_preserves_original_message_and_crowquant_data() {
     assert_eq!(service.settings().unwrap().index_conversations, None);
     service.sync(64, &CancellationToken::new()).unwrap();
     assert_eq!(service.status().unwrap().active_sources, 1);
+}
+
+#[test]
+fn failed_multi_version_upgrade_rolls_back_the_entire_schema_change() {
+    let (dir, storage, service) = open();
+    message(
+        &storage,
+        "rollback",
+        MessageRole::User,
+        "original rollback sentinel",
+    );
+    let note = service.remember("original quartz note").unwrap();
+    let before = storage.get_crowquant_memory(&note.id).unwrap().unwrap();
+    let path = storage.database_path().to_path_buf();
+    drop(service);
+    drop(storage);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch(RESTORE_ALPHA_TWO).unwrap();
+    // An unexpected name collision forces the final migration step to fail.
+    connection
+        .execute_batch("CREATE TABLE memory_embedding_profiles(id TEXT);")
+        .unwrap();
+    drop(connection);
+    assert!(Storage::open(dir.path()).is_err());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = connection
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        version, 2,
+        "The whole upgrade must roll back, including completed earlier steps"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='memory_sources'",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT content FROM messages WHERE id='rollback'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "original rollback sentinel"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT block FROM crowquant_memories WHERE id=?1",
+                [&note.id],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        before.block
+    );
 }
 
 #[test]

@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -14,22 +14,32 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
         )));
     }
 
+    if installed_version == CURRENT_SCHEMA_VERSION {
+        return Ok(());
+    }
+    // Every intermediate version is part of one upgrade. A later failed step
+    // must not strand an earlier installation at a half-upgraded schema.
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if installed_version < 1 {
-        migrate_to_v1(connection)?;
+        migrate_to_v1(&transaction)?;
     }
     if installed_version < 2 {
-        migrate_to_v2(connection)?;
+        migrate_to_v2(&transaction)?;
     }
     if installed_version < 3 {
-        migrate_to_v3(connection)?;
+        migrate_to_v3(&transaction)?;
     }
+    if installed_version < 4 {
+        migrate_to_v4(&transaction)?;
+    }
+
+    transaction.commit()?;
 
     Ok(())
 }
 
-fn migrate_to_v1(connection: &mut Connection) -> StorageResult<()> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(
+fn migrate_to_v1(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY NOT NULL,
@@ -118,14 +128,12 @@ fn migrate_to_v1(connection: &mut Connection) -> StorageResult<()> {
             ON action_audit(action_id, sequence);
         "#,
     )?;
-    transaction.pragma_update(None, "user_version", 1u32)?;
-    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 1u32)?;
     Ok(())
 }
 
-fn migrate_to_v2(connection: &mut Connection) -> StorageResult<()> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(
+fn migrate_to_v2(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS crowquant_memories (
             id TEXT PRIMARY KEY NOT NULL,
@@ -143,14 +151,12 @@ fn migrate_to_v2(connection: &mut Connection) -> StorageResult<()> {
             ON crowquant_memories(created_at_ms DESC);
         "#,
     )?;
-    transaction.pragma_update(None, "user_version", 2u32)?;
-    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 2u32)?;
     Ok(())
 }
 
-fn migrate_to_v3(connection: &mut Connection) -> StorageResult<()> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(
+fn migrate_to_v3(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
         r#"
         CREATE TABLE memory_sources (
             id TEXT PRIMARY KEY NOT NULL,
@@ -240,7 +246,30 @@ fn migrate_to_v3(connection: &mut Connection) -> StorageResult<()> {
         END;
         "#,
     )?;
-    transaction.pragma_update(None, "user_version", 3u32)?;
-    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 3u32)?;
+    Ok(())
+}
+
+fn migrate_to_v4(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE memory_embedding_profiles (
+            id TEXT PRIMARY KEY NOT NULL,
+            config_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE memory_vectors (
+            chunk_id TEXT NOT NULL REFERENCES memory_chunks(id) ON DELETE CASCADE,
+            profile_id TEXT NOT NULL REFERENCES memory_embedding_profiles(id),
+            dimensions INTEGER NOT NULL CHECK(dimensions BETWEEN 1 AND 4096),
+            codec TEXT NOT NULL CHECK(codec='f32le-normalized-v1'),
+            data BLOB NOT NULL,
+            content_hash TEXT NOT NULL,
+            quarantined INTEGER NOT NULL DEFAULT 0 CHECK(quarantined IN (0,1)),
+            PRIMARY KEY(chunk_id,profile_id)
+        );
+    "#,
+    )?;
+    connection.pragma_update(None, "user_version", 4u32)?;
     Ok(())
 }

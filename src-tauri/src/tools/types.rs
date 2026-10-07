@@ -294,6 +294,8 @@ pub enum ToolOutput {
     MemorySearch {
         query: String,
         results: Vec<MemorySearchMatch>,
+        #[serde(default,skip_serializing_if="Vec::is_empty")]
+        warnings: Vec<String>,
     },
 }
 
@@ -318,6 +320,9 @@ pub struct MemorySearchMatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
 }
+
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
+pub struct MemorySearchResponse {pub results:Vec<MemorySearchMatch>,pub warnings:Vec<String>}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]

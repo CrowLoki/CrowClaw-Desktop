@@ -40,6 +40,8 @@ impl Storage {
             memory_sources: super::memory::sources_from(&transaction)?,
             memory_chunks: super::memory::chunks_from(&transaction)?,
             memory_exclusions: super::memory::exclusions_from(&transaction)?,
+            memory_embedding_profiles: super::semantic::profiles_from(&transaction)?,
+            memory_vectors: super::semantic::vectors_from(&transaction)?,
         };
         transaction.commit()?;
         Ok(export)
@@ -72,6 +74,8 @@ impl Storage {
         transaction.execute_batch(
             r#"
             DELETE FROM action_audit;
+            DELETE FROM memory_vectors;
+            DELETE FROM memory_embedding_profiles;
             DELETE FROM proposed_actions;
             DELETE FROM messages;
             DELETE FROM tasks;
@@ -111,7 +115,9 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM crowquant_memories) +
              (SELECT COUNT(*) FROM memory_sources) +
              (SELECT COUNT(*) FROM memory_chunks) +
-             (SELECT COUNT(*) FROM memory_exclusions)"#,
+             (SELECT COUNT(*) FROM memory_exclusions) +
+             (SELECT COUNT(*) FROM memory_embedding_profiles) +
+             (SELECT COUNT(*) FROM memory_vectors)"#,
         [],
         |row| row.get(0),
     )?;

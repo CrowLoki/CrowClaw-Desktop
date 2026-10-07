@@ -58,10 +58,10 @@ Files: `app.rs`, `lib.rs`, `tools/types.rs`, `tools/definitions.rs`, `crowquant_
 
 Files: new `memory/embedding.rs`, vector persistence and profile contracts; Memory view configuration/status.
 
-- [ ] Implement OpenAI embeddings and Ollama embed with loopback-only URL admission, no proxies, redirects disabled, 15-second timeout and 4 MiB response bound.
-- [ ] Validate response model/profile, finite values, dimensions, normalization and byte length; batch at most 8 chunks per request.
-- [ ] Store profile-bound native f32 vectors; ignore stale profiles and expose degraded status on failures.
-- [ ] Verify paraphrase retrieval with a deterministic local fixture, failure fallback, cancellation, remote URL denial, redirect denial and profile change.
+- [x] Implement OpenAI embeddings and Ollama embed with loopback-only URL admission, no proxies, redirects disabled, 15-second timeout and 4 MiB response bound.
+- [x] Validate response model/profile, finite values, dimensions, normalization and byte length; batch at most 8 chunks per request.
+- [x] Store profile-bound native f32 vectors; ignore stale profiles and expose degraded status on failures.
+- [x] Verify paraphrase retrieval with a deterministic local fixture, failure fallback, cancellation, remote URL denial, redirect denial and profile change.
 
 ## Task 4: Integrated delivery and acceptance
 
@@ -73,9 +73,9 @@ Files: new `memory/embedding.rs`, vector persistence and profile contracts; Memo
 
 ## Current checkpoint
 
-2026-10-08: Crow confirmed that the active goal is to finish CrowClaw-Desktop and requested God mode integration too. Tasks 1 and 2 now have a native implementation on `codex/native-memory-foundation`: schema 3, canonical-source jobs, FTS over text/titles, Unicode chunks, CrowQuant rank fusion, provenance, withdrawal, export, bounded failed-job retries, retained approved-file admission, desktop controls and agent integration. A successful schema-2 upgrade test verifies unchanged original message/CrowQuant data. The full Rust run passes 86 tests (40 library, 23 agent harness, 16 memory integration, 7 storage); frontend tests pass 13/13 and production build passes. Prior loopback provider failures did not recur; no provider or machine configuration was changed, and the earlier cause remains unverified.
+2026-10-08: Crow confirmed the goal is to finish CrowClaw-Desktop and requested God mode integration too. Tasks 1–3 are now implemented on `codex/native-memory-foundation`, extending source checkpoint `d19a14a`: native source/index storage and controls, approved agent recall, plus optional local embeddings with schema 4, profile isolation, offline fallback and cancellation. The full Rust suite passes 98 tests and the frontend passes 16 tests plus production build. A failed-upgrade regression also proves that all intermediate schema changes roll back together while original messages/CrowQuant bytes survive. The actual installed Qwen3 Embedding 0.6B model passed native paraphrase/restart acceptance using synthetic notes and a disposable database; no download or private corpus was used. Exact boundaries, fixture-runtime behavior and temporary-runtime cleanup are recorded in [the service acceptance receipt](../../acceptance/CROWCLAW-MEMORY-SERVICE-ACCEPTANCE-2026-10-08.md).
 
-This is a source checkpoint, not a release or installed-app acceptance claim. Optional semantic embeddings (Task 3), performance measurements, native Windows UI/installer acceptance and GitHub delivery remain unfinished. The next implementation action is the profile-bound local semantic adapter with offline fallback; then validate the installed app and deliver the whole memory feature before continuing the agreed standalone roadmap. Main and the separate dependency-security branch are untouched.
+This is a tested source/local-model checkpoint, not installed-app or release acceptance. Next: measure the scan bound, exercise actual native Windows UI with an isolated application profile, then validate installer/upgrade/restart/export/uninstall and deliver the memory feature. Resolve any missing native testing seam within this app without touching real user data. Main and the separate dependency-security branch are untouched. Continue the wider approved standalone roadmap after memory delivery.
 
 ## Next standalone capability slices
 

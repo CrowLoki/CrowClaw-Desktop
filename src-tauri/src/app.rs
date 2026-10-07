@@ -129,10 +129,14 @@ impl AppState {
                     worker.sync(crate::memory::INDEX_BATCH, &token)
                 })
                 .await;
-                let delay = match result {
+                let mut delay = match result {
                     Ok(Ok(report)) if report.pending > 0 && report.warnings.is_empty() => 50,
                     _ => 2000,
                 };
+                if shutdown.is_cancelled() {break;}
+                if let Ok(report)=memory.sync_semantic(&shutdown).await {
+                    if report.indexed>0 && report.pending>0 {delay=50;}
+                }
                 tokio::select! {
                     _=shutdown.cancelled()=>break,
                     _=tokio::time::sleep(std::time::Duration::from_millis(delay))=>{},
@@ -870,11 +874,11 @@ pub fn crowclaw_memory_configure(
 }
 
 #[tauri::command]
-pub fn crowclaw_memory_search(
+pub async fn crowclaw_memory_search(
     state: State<'_, AppState>,
     request: MemoryQuery,
 ) -> Result<MemorySearchResult, String> {
-    state.memory.search(&request, &CancellationToken::new())
+    state.memory.search_async(&request, &CancellationToken::new()).await
 }
 
 #[derive(Deserialize)]
@@ -913,7 +917,7 @@ pub async fn crowclaw_memory_rebuild(state: State<'_, AppState>) -> Result<Index
 pub fn crowclaw_memory_export(state: State<'_, AppState>) -> Result<Value, String> {
     let export = state.storage.export_all().map_err(display_error)?;
     Ok(
-        json!({"schemaVersion":export.schema_version,"exportedAtMs":export.exported_at_ms,"sources":export.memory_sources,"chunks":export.memory_chunks,"exclusions":export.memory_exclusions}),
+        json!({"schemaVersion":export.schema_version,"exportedAtMs":export.exported_at_ms,"sources":export.memory_sources,"chunks":export.memory_chunks,"exclusions":export.memory_exclusions,"embeddingProfiles":export.memory_embedding_profiles,"vectors":export.memory_vectors}),
     )
 }
 
@@ -929,6 +933,11 @@ pub fn crowclaw_memory_admit_file(
     request: MemoryFileRequest,
 ) -> Result<crate::storage::NativeMemorySource, String> {
     state.memory.admit_approved_file(&request.action_id)
+}
+
+#[tauri::command]
+pub async fn crowclaw_memory_semantic_sync(state:State<'_,AppState>)->Result<crate::memory::SemanticIndexReport,String> {
+    state.memory.sync_semantic(&state.memory_shutdown).await
 }
 
 #[tauri::command]
@@ -1893,6 +1902,8 @@ fn action_details(tool_name: &str, request: &Value) -> Vec<String> {
             ),
             "Search enabled indexed conversations, notes, explicitly admitted files and approved-action summaries; do not open original files"
                 .into(),
+            "If semantic retrieval is enabled, send this query only to the selected local embedding server; use offline ranking if it is unavailable"
+                .into(),
             "Return stored excerpts, source/authorship and rank channels to the connected model and approved-action audit"
                 .into(),
         ],
@@ -2056,6 +2067,7 @@ mod tests {
             action_id: search.action_id.clone(),
             output: ToolOutput::MemorySearch {
                 query: "qubit".into(),
+                warnings: Vec::new(),
                 results: vec![MemorySearchMatch {
                     id: "searched-row".into(),
                     text: "stored qubit record".into(),
@@ -2155,6 +2167,7 @@ mod tests {
             action_id: wrong.action_id,
             output: ToolOutput::MemorySearch {
                 query: "grocery".into(),
+                warnings: Vec::new(),
                 results: Vec::new(),
             },
         };
