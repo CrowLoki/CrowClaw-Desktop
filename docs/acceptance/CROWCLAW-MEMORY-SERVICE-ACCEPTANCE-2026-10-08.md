@@ -634,5 +634,58 @@ proposed/approved/succeeded with a succeeded task.
 
 Corrected executable SHA-256:
 `977F0C4A37E8EDFFC4C27362E5DD81B7406C3C2EEA29103A8F21C81749FB311C`.
-The previous exact-installer and remaining lifecycle/browser boundaries still
-apply; successful reconnect supersedes only its earlier unverified status.
+The previous exact-installer and remaining lifecycle/browser boundaries at that
+checkpoint are superseded only by the specifically verified checks below.
+
+### Membership delivery and native conversation composer — 2026-10-09
+
+[PR #5](https://github.com/CrowLoki/CrowClaw-Desktop/pull/5) merged at
+`5f38e245b55bb5c8705f8d99733aff2a63c3728c` after
+[run 37790860065](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37790860065)
+passed on exact head `c74bdf3a26b09e21a0920edaf20323c273a46da8`. Build, fresh
+installation and upgrade each had zero annotations. Both installed receipts
+verified artifact identity, denied search without disclosure, approved search
+with matching model/native audit, uninstall retention and driver-policy cleanup.
+Publication was skipped; no installation remained on the disposable runners.
+
+- Installer SHA-256: `bc05f2385d50ea2db448e0161db50a7a30e0b532d07b7fb10820993aeab2d760`.
+- Unbundled executable SHA-256: `EDF63CA173D9C6D520A3F3EC502BBBD0AA399B89E0DE46B05BA4E1F162A81326`.
+- Installed executable SHA-256: `6E7F73031CF67381B42A09BF44D9ED1385C767AC66C89D154C07B8E6F8876342`.
+
+Real native sign-out separately confirmed remote revocation, removed the protected
+credential/selection and disabled sending. Reauthorizing the retained registration
+restored a successful Luna/low request. During the later composer requests,
+automatic credential renewal advanced the credential generation while preserving
+the account session; no interactive reauthorization was required. These supersede
+the earlier unverified sign-out and automatic-renewal boundaries. Quota exhaustion
+was not induced; synthetic quota tests are not live exhaustion/recovery proof.
+
+The new conversation composer passes 196 Rust tests and 106 frontend tests,
+production/native build and diff checks. Independent review exposed draft-conflict,
+stale sign-out and local-credential ownership defects; targeted regressions and
+the integrated suite pass after correction. Each chat owns its draft and next-turn
+selection; submission atomically records the message/task and clears the submitted
+draft. Submitted task/reply identity does not change when later picks change.
+
+Actual native checks established:
+
+- Schema 8 to 9 upgrade preserved the original canonical content digest and
+  existing protected account identity.
+- Two chats retained independent drafts and model/effort choices through Settings,
+  chat navigation and full native restart, without altering application defaults.
+- Real Luna/medium and Luna/low replies used the selected chat's choice. A real
+  local antares-1b response used its distinct local profile. This proves routing,
+  not a model-quality improvement; the local response did not follow its format.
+- Sol selection preserved drafts and prior response labels; Sol was not invoked.
+  No inference test used reasoning above high or a paid API fallback.
+- Final bundled executable SHA-256
+  `1BA10DFC731D3912AF81D0D69AA9F7D7D09DC58A6A87A7178543E44ED5AE28F2`
+  returned the exact requested Luna/low reply. Its actual bundled layout passed
+  at 1180x760 and the minimum 920x640 with no horizontal overflow and Send visible.
+  A further normal restart retained the reply and selection; no test draft,
+  approval dialog or running task remained.
+
+These composer results are native-executable acceptance, not yet exact-installed
+artifact acceptance of this newer slice. The unresolved browser return-page
+rendering, broader packaged semantic/withdrawal/export/network-isolation journeys,
+Claude route and standalone roadmap remain distinct. No public release is claimed.

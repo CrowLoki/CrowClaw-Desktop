@@ -8,6 +8,10 @@ class UnavailableGateway implements CrowClawGateway {
   }
 
   bootstrap = async () => this.unavailable();
+  getComposer = async () => this.unavailable();
+  saveComposerDraft = async () => this.unavailable();
+  chooseComposerModel = async () => this.unavailable();
+  refreshComposerModels = async () => this.unavailable();
   membershipSnapshot = async () => this.unavailable();
   signInMembership = async () => this.unavailable();
   cancelMembershipSignIn = async () => this.unavailable();

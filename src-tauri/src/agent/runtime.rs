@@ -86,6 +86,8 @@ impl AgentSession {
 pub enum AgentRunOutcome {
     Completed {
         message: ChatMessage,
+        #[serde(default)]
+        reported_model: Option<String>,
         iterations: usize,
         tool_calls: usize,
     },
@@ -213,6 +215,7 @@ impl AgentRuntime {
                 self.enforce_history_boundary(session)?;
                 return Ok(AgentRunOutcome::Completed {
                     message: completion.message,
+                    reported_model: completion.model,
                     iterations: session.iterations,
                     tool_calls: session.tool_calls,
                 });
@@ -393,7 +396,7 @@ mod tests {
         };
         let second = ChatCompletion {
             id: None,
-            model: None,
+            model: Some("reported-local-fixture".into()),
             message: ChatMessage::assistant("The approved file contains real fixture content."),
             finish_reason: Some("stop".into()),
             usage: None,
@@ -431,7 +434,9 @@ mod tests {
             .run_until_blocked(&mut session, &CancellationToken::new())
             .await
             .unwrap();
-        assert!(matches!(completed, AgentRunOutcome::Completed { .. }));
+        assert!(
+            matches!(completed, AgentRunOutcome::Completed { reported_model:Some(ref model), .. } if model=="reported-local-fixture")
+        );
 
         let requests = provider.requests();
         let tool_message = requests[1]

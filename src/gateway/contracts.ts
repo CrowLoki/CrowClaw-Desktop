@@ -1,3 +1,5 @@
+import type { ConversationComposerSnapshot, ConversationModelChoice, ComposerModelSource } from './composerContracts';
+
 export type ProviderKind = "lm-studio" | "ollama" | "llama-cpp" | "custom";
 
 export type ModelEndpointDraft = {
@@ -67,6 +69,9 @@ export type ConversationMessage = {
   createdAt: string;
   status: MessageStatus;
   taskId?: string;
+  requestedModel?: string;
+  reportedModel?: string;
+  reasoningEffort?: string;
 };
 
 export type ConversationSummary = {
@@ -225,6 +230,10 @@ export type EvolutionSnapshot = { active: EvolutionRevision; observations: Evolu
 export type EvolutionDraftRequest = { title: string; rationale: string; instructions: string; sourceTaskIds: string[]; baseRevision: number };
 
 export interface CrowClawGateway {
+  getComposer(conversationId: string): Promise<ConversationComposerSnapshot>;
+  saveComposerDraft(conversationId: string, revision: number, draft: string): Promise<ConversationComposerSnapshot>;
+  chooseComposerModel(conversationId: string, revision: number, selection: ConversationModelChoice): Promise<ConversationComposerSnapshot>;
+  refreshComposerModels(sourceId: string): Promise<ComposerModelSource>;
   membershipSnapshot(): Promise<MembershipSnapshot>;
   signInMembership(request: MembershipSignInRequest): Promise<MembershipAccount>;
   cancelMembershipSignIn(requestId: string): Promise<boolean>;
@@ -253,6 +262,7 @@ export interface CrowClawGateway {
     conversationId: string,
     content: string,
     selectedFolder: SelectedFolder | null,
+    composerRevision?: number,
   ): Promise<ChatTurnResult>;
   cancelTask(taskId: string): Promise<TaskCancellationResult>;
   decideAction(actionId: string, decision: ActionDecision): Promise<ActionDecisionResult>;

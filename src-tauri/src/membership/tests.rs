@@ -494,6 +494,40 @@ fn token_rotation_preserves_the_same_accounts_model_choice_until_catalog_refresh
 }
 
 #[test]
+fn conversation_choice_validation_does_not_mutate_the_account_default() {
+    let directory = TempDir::new().unwrap();
+    let storage = Storage::open(directory.path()).unwrap();
+    let account = add(&storage, "composer-client", "Composer account");
+    storage
+        .membership_save_catalog(
+            &account.id,
+            1,
+            &catalog(&account, "offered-model", &["low", "high"]),
+        )
+        .unwrap();
+    storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("low")))
+        .unwrap();
+    assert!(storage
+        .membership_account(&account.id)
+        .unwrap()
+        .selection
+        .is_none());
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("ultra")))
+        .is_err());
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "different-model", Some("low")))
+        .is_err());
+    storage
+        .membership_clear_credentials(&account.id, 1)
+        .unwrap();
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("low")))
+        .is_err());
+}
+
+#[test]
 fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
     let directory = TempDir::new().unwrap();
     let storage = Storage::open(directory.path()).unwrap();

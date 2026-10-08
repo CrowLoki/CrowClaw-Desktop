@@ -1,7 +1,10 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
-use super::{now_ms, require_non_empty, Storage, StorageError, StorageResult};
+use super::{
+    now_ms, require_non_empty, Message, MessageInput, MessageRole, Storage, StorageError,
+    StorageResult, StoredTask, TaskInput,
+};
 
 pub const MAX_DRAFT_BYTES: usize = 1024 * 1024;
 
@@ -25,6 +28,98 @@ pub struct ConversationComposer {
 }
 
 impl Storage {
+    /// Atomically submits a user turn against the authoritative saved selection.
+    /// Provider availability/capabilities must be checked by the native caller
+    /// before this operation; this snapshot contains no connection credentials.
+    pub fn begin_composer_turn(
+        &self,
+        composer: &ConversationComposer,
+        message: &MessageInput,
+        task: &TaskInput,
+    ) -> StorageResult<(Message, StoredTask, ConversationComposer)> {
+        require_non_empty("conversation id", &composer.conversation_id)?;
+        require_non_empty("message id", &message.id)?;
+        require_non_empty("message content", &message.content)?;
+        require_non_empty("task id", &task.id)?;
+        if message.conversation_id != composer.conversation_id
+            || task.conversation_id.as_deref() != Some(composer.conversation_id.as_str())
+            || message.role != MessageRole::User
+            || task.kind != "agent-turn"
+        {
+            return Err(StorageError::InvalidData(
+                "Composer submission requires a user message and agent-turn task in the same conversation".into(),
+            ));
+        }
+        if message.content.len() > MAX_DRAFT_BYTES || message.content.contains('\0') {
+            return Err(StorageError::InvalidData(
+                "Message exceeds its text bounds".into(),
+            ));
+        }
+        let mut message = message.clone();
+        let mut task = task.clone();
+        let mut metadata = submission_object(&message.metadata, "message metadata")?;
+        let mut payload = submission_object(&task.payload, "task payload")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = composer_from(&transaction, &composer.conversation_id)?;
+        if current.revision != composer.revision
+            || current.selection != composer.selection
+            || current.revision >= i32::MAX as u32
+        {
+            return Err(StorageError::Conflict(
+                "This conversation changed; refresh its draft and model choice before sending"
+                    .into(),
+            ));
+        }
+        let selection = current.selection.as_ref().ok_or_else(|| {
+            StorageError::InvalidData("Choose a conversation model before sending".into())
+        })?;
+        let snapshot = serde_json::to_value(selection)?;
+        metadata.insert("modelSelection".into(), snapshot.clone());
+        payload.insert("modelSelection".into(), snapshot);
+        payload.insert("composerRevision".into(), current.revision.into());
+        message.metadata = metadata.into();
+        task.payload = payload.into();
+        let now = now_ms()?;
+        let has_user_message: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=?1 AND role='user')",
+            [&current.conversation_id],
+            |row| row.get(0),
+        )?;
+        if !has_user_message {
+            if let Some(title) = task
+                .payload
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .filter(|title| !title.trim().is_empty() && title.len() <= 256)
+            {
+                transaction.execute(
+                    "UPDATE conversations SET title=?2 WHERE id=?1",
+                    params![current.conversation_id, title],
+                )?;
+            }
+        }
+        let saved_message = super::conversations::append_message_in(
+            &transaction,
+            &message,
+            &serde_json::to_string(&message.metadata)?,
+            now,
+        )?;
+        let saved_task = super::tasks::insert_task_in(
+            &transaction,
+            &task,
+            &serde_json::to_string(&task.payload)?,
+            now,
+        )?;
+        transaction.execute(
+            "UPDATE conversation_composers SET draft='', revision=?2, updated_at_ms=?3 WHERE conversation_id=?1",
+            params![current.conversation_id, current.revision + 1, now],
+        )?;
+        let next = composer_from(&transaction, &current.conversation_id)?;
+        transaction.commit()?;
+        Ok((saved_message, saved_task, next))
+    }
+
     /// An untouched composer has revision zero. Reading it does not change the
     /// conversation's recency or seed it from a mutable global model default.
     pub fn conversation_composer(&self, id: &str) -> StorageResult<ConversationComposer> {
@@ -105,6 +200,19 @@ impl Storage {
         )?;
         transaction.commit()?;
         Ok(next)
+    }
+}
+
+fn submission_object(
+    value: &serde_json::Value,
+    field: &str,
+) -> StorageResult<serde_json::Map<String, serde_json::Value>> {
+    match value {
+        serde_json::Value::Null => Ok(serde_json::Map::new()),
+        serde_json::Value::Object(object) => Ok(object.clone()),
+        _ => Err(StorageError::InvalidData(format!(
+            "{field} must be an object or null"
+        ))),
     }
 }
 

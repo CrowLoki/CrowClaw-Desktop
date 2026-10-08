@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ConversationComposerSnapshot, ComposerModelSource } from './composerContracts';
 import type {
   ActionDecision,
   ActionDecisionResult,
@@ -22,6 +23,10 @@ import type {
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
+  getComposer: "crowclaw_composer_get",
+  saveComposerDraft: "crowclaw_composer_save_draft",
+  chooseComposerModel: "crowclaw_composer_choose",
+  refreshComposerModels: "crowclaw_composer_refresh_models",
   membershipSnapshot: "crowclaw_membership_snapshot",
   signInMembership: "crowclaw_membership_sign_in",
   cancelMembershipSignIn: "crowclaw_membership_cancel_sign_in",
@@ -79,6 +84,10 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
 
 export function createTauriGateway(): CrowClawGateway {
   return {
+    getComposer: (conversationId) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.getComposer,{request:{conversationId}}),
+    saveComposerDraft: (conversationId,revision,draft) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.saveComposerDraft,{request:{conversationId,revision,draft}}),
+    chooseComposerModel: (conversationId,revision,selection) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.chooseComposerModel,{request:{conversationId,revision,selection}}),
+    refreshComposerModels: (sourceId) => invokeNative<ComposerModelSource>(TAURI_COMMANDS.refreshComposerModels,{request:{sourceId}}),
     membershipSnapshot: () => invokeNative<MembershipSnapshot>(TAURI_COMMANDS.membershipSnapshot),
     signInMembership: (request) => invokeNative<MembershipAccount>(TAURI_COMMANDS.signInMembership, { request }),
     cancelMembershipSignIn: (requestId) => invokeNative<boolean>(TAURI_COMMANDS.cancelMembershipSignIn, { requestId }),
@@ -118,9 +127,9 @@ export function createTauriGateway(): CrowClawGateway {
     getConversation: (conversationId: string) =>
       invokeNative<Conversation>(TAURI_COMMANDS.getConversation, { request: { conversationId } }),
     selectFolder: () => invokeNative<SelectedFolder | null>(TAURI_COMMANDS.selectFolder),
-    sendMessage: (conversationId: string, content: string, selectedFolder: SelectedFolder | null) =>
+    sendMessage: (conversationId: string, content: string, selectedFolder: SelectedFolder | null, composerRevision?: number) =>
       invokeNative<ChatTurnResult>(TAURI_COMMANDS.sendMessage, {
-        request: { conversationId, content, selectedFolder },
+        request: { conversationId, content, selectedFolder, ...(composerRevision === undefined ? {} : {composerRevision}) },
       }),
     cancelTask: (taskId: string) =>
       invokeNative<TaskCancellationResult>(TAURI_COMMANDS.cancelTask, { request: { taskId } }),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { AppShell, type AppView } from "./components/AppShell";
@@ -15,6 +15,8 @@ import { SettingsView } from "./components/SettingsView";
 import { TaskCenter } from "./components/TaskCenter";
 import { MembershipAccounts, MembershipUsage, MembershipWelcome } from "./components/MembershipAccounts";
 import { useMembershipAccounts } from "./components/useMembershipAccounts";
+import { useConversationComposer } from './components/useConversationComposer';
+import { ComposerModelControls } from './components/ComposerModelControls';
 import type {
   ActionDecision,
   AgentTask,
@@ -76,7 +78,19 @@ export function App({ gateway = defaultGateway }: AppProps) {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sendingIds, setSendingIds] = useState<Set<string>>(new Set());
+  const sendingRef = useRef(new Set<string>());
+  const [sendErrors, setSendErrors] = useState<Record<string,string|null>>({});
+  const [conversationFolders, setConversationFolders] = useState<Record<string,SelectedFolder|null>>({});
+  const loadGeneration = useRef(0);
+  const composer = useConversationComposer(gateway,conversation?.id ?? null);
+  const previousView = useRef(view);
+  useEffect(() => {
+    const returningToChat = previousView.current !== 'chat' && view === 'chat';
+    previousView.current = view;
+    if (returningToChat) void composer.sync().catch(() => undefined);
+  }, [view, composer.sync]);
+  const sending = conversation !== null && sendingIds.has(conversation.id);
   const [cancellingTaskId, setCancellingTaskId] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<ActionDecision | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredEndpoint[]>([]);
@@ -91,14 +105,16 @@ export function App({ gateway = defaultGateway }: AppProps) {
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
+      const generation=++loadGeneration.current;
       setConversationLoading(true);
       setOperationError(null);
       try {
-        setConversation(await gateway.getConversation(conversationId));
+        const loaded=await gateway.getConversation(conversationId);
+        if(generation===loadGeneration.current)setConversation(loaded);
       } catch (cause) {
-        setOperationError(messageFrom(cause, "The conversation could not be opened."));
+        if(generation===loadGeneration.current)setOperationError(messageFrom(cause, "The conversation could not be opened."));
       } finally {
-        setConversationLoading(false);
+        if(generation===loadGeneration.current)setConversationLoading(false);
       }
     },
     [gateway],
@@ -163,6 +179,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
   }
 
   async function createConversation() {
+    ++loadGeneration.current;
     setCreating(true);
     setOperationError(null);
     try {
@@ -193,11 +210,19 @@ export function App({ gateway = defaultGateway }: AppProps) {
 
   async function sendMessage(content: string, selectedFolder: SelectedFolder | null) {
     if (!conversation) return;
-    setSending(true);
+    const conversationId=conversation.id;
+    if(sendingRef.current.has(conversationId))throw new Error('A message is already being sent in this conversation.');
+    sendingRef.current.add(conversationId);
+    const submittedDraft=composer.draft;
+    setSendingIds(current=>new Set(current).add(conversationId));
+    setSendErrors(current=>({...current,[conversationId]:null}));
     setOperationError(null);
+    let responseReceived=false;
     try {
-      const result = await gateway.sendMessage(conversation.id, content, selectedFolder);
-      setConversation(result.conversation);
+      const revision=await composer.flush();
+      const result = await gateway.sendMessage(conversationId, content, selectedFolder,revision);
+      responseReceived=true;
+      setConversation(current=>current?.id===conversationId?result.conversation:current);
       setBootstrap((current) => {
         if (!current) return current;
         return {
@@ -210,10 +235,14 @@ export function App({ gateway = defaultGateway }: AppProps) {
           ],
         };
       });
+      await composer.submitted(conversationId,submittedDraft);
     } catch (cause) {
-      setOperationError(messageFrom(cause, "CrowClaw could not send that message."));
+      const detail=messageFrom(cause, "CrowClaw could not send that message.");
+      setSendErrors(current=>({...current,[conversationId]:responseReceived?`Response saved, but composer refresh failed: ${detail}`:detail}));
+      throw cause;
     } finally {
-      setSending(false);
+      sendingRef.current.delete(conversationId);
+      setSendingIds(current=>{const next=new Set(current);next.delete(conversationId);return next;});
     }
   }
 
@@ -316,10 +345,12 @@ export function App({ gateway = defaultGateway }: AppProps) {
     />
   ) : undefined;
 
+  const chatConnection = composer.snapshot?.connection ?? {...bootstrap.connection,status:'disconnected' as const};
+
   return (
     <><AppShell
       view={view}
-      connection={bootstrap.connection}
+      connection={view==='chat'?chatConnection:bootstrap.connection}
       tasks={bootstrap.tasks}
       developmentPreview={!isTauriRuntime() && import.meta.env.DEV}
       sidebar={sidebar}
@@ -328,11 +359,20 @@ export function App({ gateway = defaultGateway }: AppProps) {
       {view === "chat" && (
         <ChatWorkspace
           conversation={conversation}
-          connection={bootstrap.connection}
+          connection={chatConnection}
           activeTask={activeConversationTask}
           loading={conversationLoading}
           sending={sending}
-          error={operationError}
+          error={operationError ?? (conversation ? sendErrors[conversation.id] : null) ?? composer.error ?? composer.snapshot?.warning ?? null}
+          draft={composer.draft}
+          onDraftChange={composer.setDraft}
+          composerLoading={conversationLoading || composer.loading}
+          selectedFolder={conversation ? conversationFolders[conversation.id] ?? null : null}
+          onSelectedFolderChange={folder=>{if(conversation)setConversationFolders(current=>({...current,[conversation.id]:folder}));}}
+          modelControls={<><ComposerModelControls key={conversation?.id ?? 'none'} value={composer.snapshot?.composer.selection ?? null} sources={composer.snapshot?.sources ?? []} busy={conversationLoading || composer.loading || sending} onChoose={composer.choose} onRefresh={composer.refreshSource} />
+            {(composer.draft || composer.saving) && <span role="status">{composer.saving ? 'Saving draft…' : composer.snapshot?.composer.draft === composer.draft ? 'Draft saved on this device.' : 'Draft kept in this window; not saved yet.'}</span>}
+            {(composer.error || operationError || (conversation && sendErrors[conversation.id])) && <button type="button" className="button button--secondary" disabled={composer.loading || sending} onClick={()=>void composer.refresh().then(()=>{setOperationError(null);if(conversation)setSendErrors(current=>({...current,[conversation.id]:null}));}).catch(()=>undefined)}>Refresh composer</button>}
+          </>}
           membershipUsage={<MembershipUsage membership={membership} />}
           onSelectFolder={() => gateway.selectFolder()}
           onSend={sendMessage}
