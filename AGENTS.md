@@ -14,11 +14,11 @@ application and the only product in this repository.
 
 ## Worktree discipline
 
-- Each independently edited component has its own branch and Git worktree.
+- Use the active checkout and assign explicit paths to concurrent writers. Create an isolated worktree only when overlapping work or the requested task requires one.
 - A component agent edits only its owned paths.
 - `main` is integration-only. Merge verified component commits; do not develop features directly on `main`.
-- Do not share a writable checkout between agents.
-- Build and test each component before integration, then run the full acceptance test from a fresh checkout.
+- Serialize integration and avoid overlapping edits.
+- Check changed behavior with relevant existing tests. Use full fresh-checkout acceptance for a release or a packaging/portability change, not every small edit.
 
 ## Release truth
 

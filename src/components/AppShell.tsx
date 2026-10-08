@@ -5,12 +5,13 @@ import {
   ListTodo,
   MessageSquareText,
   Settings,
+  Sprout,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentTask, ModelConnection } from "../gateway/contracts";
 import { BrandMark } from "./BrandMark";
 
-export type AppView = "chat" | "tasks" | "memory" | "connections" | "settings";
+export type AppView = "chat" | "tasks" | "memory" | "evolution" | "connections" | "settings";
 
 type AppShellProps = {
   view: AppView;
@@ -26,6 +27,7 @@ const navigation = [
   { id: "chat", label: "Chat", icon: MessageSquareText },
   { id: "tasks", label: "Tasks", icon: ListTodo },
   { id: "memory", label: "Memory", icon: Brain },
+  { id: "evolution", label: "Evolution", icon: Sprout },
   { id: "connections", label: "Connections", icon: Cable },
   { id: "settings", label: "Settings", icon: Settings },
 ] satisfies Array<{ id: AppView; label: string; icon: typeof MessageSquareText }>;
@@ -78,9 +80,10 @@ export function AppShell({
         <header className="application-titlebar">
           <span className="application-titlebar__title">CrowClaw</span>
           <span className="model-chip" title={`${connection.baseUrl} · ${connection.model}`}>
-            <span className="model-chip__status" />
+            <span className={`model-chip__status ${connection.status !== "connected" ? "model-chip__status--disconnected" : ""}`} />
             {connection.label}
             <small>{connection.model}</small>
+            {connection.status !== "connected" && <small>Disconnected</small>}
           </span>
         </header>
         {children}
@@ -88,4 +91,3 @@ export function AppShell({
     </div>
   );
 }
-

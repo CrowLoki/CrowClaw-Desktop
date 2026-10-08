@@ -18,7 +18,7 @@ pub(crate) fn snapshot(storage: &crate::storage::Storage) -> Result<serde_json::
         "actionAudit":export.action_audit,"tasks":export.tasks,
         "sources":export.memory_sources,"chunks":export.memory_chunks,
         "exclusions":export.memory_exclusions,"embeddingProfiles":export.memory_embedding_profiles,
-        "vectors":export.memory_vectors
+        "vectors":export.memory_vectors,"evolution":export.evolution
     }))
 }
 

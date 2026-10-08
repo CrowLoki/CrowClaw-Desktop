@@ -8,6 +8,14 @@ class UnavailableGateway implements CrowClawGateway {
   }
 
   bootstrap = async () => this.unavailable();
+  membershipSnapshot = async () => this.unavailable();
+  signInMembership = async () => this.unavailable();
+  cancelMembershipSignIn = async () => this.unavailable();
+  signOutMembership = async () => this.unavailable();
+  refreshMembershipModels = async () => this.unavailable();
+  useMembershipModel = async () => this.unavailable();
+  acknowledgeMembershipWelcome = async () => this.unavailable();
+  manageMembershipUsage = async () => this.unavailable();
   discoverEndpoints = async () => this.unavailable();
   testConnection = async () => this.unavailable();
   connectModel = async () => this.unavailable();
@@ -30,6 +38,15 @@ class UnavailableGateway implements CrowClawGateway {
   exportMemory = async () => this.unavailable();
   admitFileMemory = async () => this.unavailable();
   syncSemanticMemory = async () => this.unavailable();
+  evolutionSnapshot = async () => this.unavailable();
+  saveEvolutionFeedback = async () => this.unavailable();
+  draftEvolution = async () => this.unavailable();
+  reflectEvolution = async () => this.unavailable();
+  evaluateEvolution = async () => this.unavailable();
+  rateEvolutionEvaluation = async () => this.unavailable();
+  decideEvolution = async () => this.unavailable();
+  restoreEvolution = async () => this.unavailable();
+  cancelEvolution = async () => this.unavailable();
 }
 
 export function createCrowClawGateway(): CrowClawGateway {

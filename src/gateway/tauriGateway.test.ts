@@ -20,6 +20,39 @@ describe("Tauri command contract", () => {
     expect(TAURI_COMMANDS.recallCrowQuant).toBe("crowclaw_crowquant_recall");
   });
 
+  it("uses the frozen membership RPC envelopes without passing auth material to JavaScript", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const gateway = createTauriGateway();
+    const signIn = { requestId: "e411b781-4e6b-479c-967b-7b8b4cc78237", label: "Personal", accountId: null };
+    const choice = { accountId: "account-1", model: "returned-model", reasoningEffort: null };
+    await gateway.membershipSnapshot();
+    await gateway.signInMembership(signIn);
+    await gateway.cancelMembershipSignIn(signIn.requestId);
+    await gateway.signOutMembership("account-1");
+    await gateway.refreshMembershipModels("account-1");
+    await gateway.useMembershipModel(choice);
+    await gateway.acknowledgeMembershipWelcome();
+    await gateway.manageMembershipUsage();
+    expect(invokeMock.mock.calls).toEqual([
+      ["crowclaw_membership_snapshot", undefined],
+      ["crowclaw_membership_sign_in", { request: signIn }],
+      ["crowclaw_membership_cancel_sign_in", { requestId: signIn.requestId }],
+      ["crowclaw_membership_sign_out", { accountId: "account-1" }],
+      ["crowclaw_membership_refresh_models", { accountId: "account-1" }],
+      ["crowclaw_membership_use_model", { request: choice }],
+      ["crowclaw_membership_acknowledge_welcome", undefined],
+      ["crowclaw_membership_manage_usage", undefined],
+    ]);
+  });
+
+  it("preserves a false cancellation result and native error messages", async () => {
+    const gateway = createTauriGateway();
+    invokeMock.mockResolvedValueOnce(false);
+    await expect(gateway.cancelMembershipSignIn("request")).resolves.toBe(false);
+    invokeMock.mockRejectedValueOnce("Native sign-in failed");
+    await expect(gateway.signInMembership({ requestId: "request", label: "Personal", accountId: "account" })).rejects.toThrow("Native sign-in failed");
+  });
+
   it("sends CrowQuant requests in the native command envelope", async () => {
     const gateway = createTauriGateway();
     invokeMock.mockResolvedValue(undefined);

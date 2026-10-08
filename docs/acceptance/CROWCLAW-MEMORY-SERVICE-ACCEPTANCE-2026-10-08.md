@@ -477,3 +477,65 @@ or retry masking the race. The corrected packaged candidate still needs both mod
 - The wider approved standalone roadmap, including God mode.
 
 Source and local-model evidence alone do not satisfy these remaining gates.
+
+## Later combined native candidate: evolution and personal accounts
+
+Source `3f11ed2` adds native ChatGPT plan authentication and request transport on
+top of the separately committed governed-evolution and protected account storage.
+The normal full Rust test command passes, including 91 library tests and all
+integration/doc-test targets. All 65 frontend tests pass across nine files.
+The release-mode native build passes without creating or installing a new bundle.
+Executable SHA-256:
+`29F1D56768A2AD1451571D8A3F187CB3456F352045DBE65BD271C282FA8D1574`.
+
+Verified through the actual Tauri WebView in an isolated test profile:
+
+- Existing local-provider onboarding still connects; membership controls render
+  in onboarding/settings and reject an empty registration label.
+- After stopping the synthetic fixture, Connections selected the existing local
+  LM Studio `antares-1b` model. Evolution recorded two real comparison responses,
+  including matching requested/reported model identities.
+- Draft creation, comparison and preference did not activate guidelines. The
+  test comparison was rated Neither because the outputs did not follow the
+  requested short format; no model improvement is claimed.
+- Explicit Apply created guideline revision 1. The comparison, preference and
+  active revision survived a complete application restart. Restoring revision 0
+  created revision 2 without erasing prior history.
+- Continue with ChatGPT reached OpenAI's CrowClaw account chooser. No account was
+  selected or permission granted. Native Cancel restored the controls, stored
+  no registration and closed the callback listener.
+
+The candidate and synthetic fixture closed normally and the owned UI driver was
+detached. This establishes native-executable behavior, not installation of the
+newer combined candidate. Completed account authorization/token exchange, live
+account catalog and inference, reconnect, quota and remote/local disconnect
+journeys remain unverified. Claude integration, full packaged journeys and the
+wider standalone roadmap remain outstanding. No public release is claimed.
+
+### Reviewed session lifecycle follow-up
+
+Independent review identified cancellation losing a rotated refresh token and
+ordinary rotation cancelling healthy responses. The correction gives credential
+maintenance an owned lifetime and separates durable session invalidation from
+credential replacement in schema 8. Reconnect/sign-out invalidate the old session;
+routine renewal does not. Session handles synchronize after another instance
+reconnects. Sign-out retains cleanup ownership until the current account operation
+finishes, then revokes the latest token and clears locally. Network/auth timeouts
+were not increased. A real lock-contention regression failed at the earlier
+30-second deadline and passes with the lock held for 31 seconds. HTTP-barrier
+tests also prove renewal persistence and sign-out cleanup after caller cancellation.
+The reviewer rechecked the three findings and reported no remaining defect in
+that bounded cleanup review.
+
+The updated normal Rust suite passes 172 tests: 98 library, 23 agent-runtime,
+10 Evolution, 24 memory-foundation, 10 semantic-memory and 7 storage. Rust format
+checking and the native release build pass; the unchanged frontend has its
+65-test passing result above. Latest native executable SHA-256:
+`6F5A85CBBCF313FB1564E34CAD2775014F322672B8D2595821D9DAB8EF8E9E01`.
+The actual candidate upgraded the existing native test profile from schema 7 to 8.
+Its full Evolution-data digest and opaque host-identity digest remained identical;
+the UI retained revision 2, both model responses and the Neither preference.
+Membership controls were ready, and the candidate closed normally. A separate
+schema-7 regression preserves existing protected credential bytes and registration
+identity through upgrade. This does not replace the live-account and packaged
+acceptance gaps stated above.

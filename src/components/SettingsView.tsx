@@ -1,10 +1,11 @@
 import { Check, LoaderCircle, Save, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AppSettings, PermissionMode } from "../gateway/contracts";
 
 type SettingsViewProps = {
   settings: AppSettings;
   onSave: (settings: AppSettings) => Promise<void>;
+  membership?: ReactNode;
 };
 
 const permissionOptions: Array<{ value: PermissionMode; label: string }> = [
@@ -12,7 +13,7 @@ const permissionOptions: Array<{ value: PermissionMode; label: string }> = [
   { value: "deny", label: "Always deny" },
 ];
 
-export function SettingsView({ settings, onSave }: SettingsViewProps) {
+export function SettingsView({ settings, onSave, membership }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -52,6 +53,7 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
         {saved && <span className="section-stat section-stat--success"><Check size={18} /> Saved</span>}
       </header>
 
+      {membership}
       <section className="settings-panel" aria-labelledby="permissions-title">
         <div className="settings-panel__heading">
           <div><span className="settings-icon"><ShieldCheck size={18} /></span><div><h2 id="permissions-title">Action permissions</h2><p>These defaults never override an action-specific denial.</p></div></div>
@@ -73,4 +75,3 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
     </main>
   );
 }
-

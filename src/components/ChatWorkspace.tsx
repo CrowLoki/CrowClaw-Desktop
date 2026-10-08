@@ -7,7 +7,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import crowClawHead from "../assets/branding/crowclaw-head.webp";
 import type {
   AgentTask,
@@ -24,6 +24,7 @@ type ChatWorkspaceProps = {
   loading: boolean;
   sending: boolean;
   error: string | null;
+  membershipUsage?: ReactNode;
   onSelectFolder: () => Promise<SelectedFolder | null>;
   onSend: (content: string, selectedFolder: SelectedFolder | null) => Promise<void>;
 };
@@ -41,6 +42,7 @@ export function ChatWorkspace({
   loading,
   sending,
   error,
+  membershipUsage,
   onSelectFolder,
   onSend,
 }: ChatWorkspaceProps) {
@@ -64,7 +66,7 @@ export function ChatWorkspace({
 
   async function submit() {
     const content = draft.trim();
-    if ((!content && !selectedFolder) || sending || !conversation) return;
+    if ((!content && !selectedFolder) || sending || !conversation || connection.status !== "connected") return;
     setDraft("");
     const folder = selectedFolder;
     setSelectedFolder(null);
@@ -131,6 +133,8 @@ export function ChatWorkspace({
       </div>
 
       <div className="composer-zone">
+        {connection.provider === "chatgpt" && connection.status === "connected" && <div className="membership-plan"><span>Using ChatGPT plan</span>{membershipUsage}</div>}
+        {connection.status !== "connected" && <p role="status">Disconnected. Choose a connection in Settings or Connections to continue.</p>}
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="composer">
           {selectedFolder && (
@@ -146,7 +150,7 @@ export function ChatWorkspace({
             onKeyDown={handleKeyDown}
             placeholder={`Message CrowClaw · ${connection.model}`}
             rows={1}
-            disabled={!conversation || sending}
+            disabled={!conversation || sending || connection.status !== "connected"}
             aria-label="Message CrowClaw"
           />
           <div className="composer__toolbar">
@@ -155,7 +159,7 @@ export function ChatWorkspace({
               Choose folder
             </button>
             <span className="composer-hint"><ShieldCheck size={14} /> Local actions require permission</span>
-            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder) || sending || !conversation} aria-label="Send message">
+            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder) || sending || !conversation || connection.status !== "connected"} aria-label="Send message">
               {sending ? <LoaderCircle className="spin" size={18} /> : <ArrowUp size={19} />}
             </button>
           </div>
@@ -165,4 +169,3 @@ export function ChatWorkspace({
     </main>
   );
 }
-

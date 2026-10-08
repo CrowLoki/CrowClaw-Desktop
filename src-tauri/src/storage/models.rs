@@ -305,6 +305,8 @@ pub struct StorageExport {
     pub memory_embedding_profiles: Vec<StoredEmbeddingProfile>,
     #[serde(default)]
     pub memory_vectors: Vec<StoredMemoryVector>,
+    #[serde(default)]
+    pub evolution: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

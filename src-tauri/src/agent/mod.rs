@@ -9,8 +9,8 @@ pub use cancellation::CancellationToken;
 pub use config::{ProviderConfig, ProviderPreset};
 pub use error::{AgentError, ProviderError, StructuredError};
 pub use protocol::{
-    AssistantToolCall, ChatCompletion, ChatCompletionRequest, ChatMessage, ChatRole, TokenUsage,
-    ToolDefinition,
+    AssistantToolCall, ChatCompletion, ChatCompletionRequest, ChatMessage, ChatRole,
+    ProviderTurnContext, TokenUsage, ToolDefinition,
 };
 pub use provider::{
     ChatProvider, OpenAiCompatibleClient, ProviderHealth, ProviderHealthState, ProviderModel,
