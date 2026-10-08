@@ -565,3 +565,49 @@ at `fc2043abc37967fbd4f8bbe9674a9c086da1a6c8`; its tree matches the tested sourc
 This verifies the combined candidate's basic installed lifecycle, not every
 packaged journey or live membership behavior. The remaining boundaries above
 still apply, and no Alpha 4 tag/release was published.
+
+### Live ChatGPT membership acceptance — 2026-10-09
+
+Real OpenAI authorization, protected native credential storage and the selected
+account's live model catalog succeeded through the actual CrowClaw executable.
+The account offered both `gpt-6-luna` and `gpt-6.1-sol`; tests used Luna at low,
+medium and high reasoning only. No API key, borrowed credentials, paid fallback,
+alternative model or reasoning effort above high was used.
+
+The first real requests exposed two stream compatibility defects: the successful
+HTTP reply omitted Content-Type, and its final response snapshot omitted output
+already emitted as completed item events. CrowClaw now tolerates the missing
+advisory header while validating the bounded SSE body, and retains indexed
+`response.output_item.done` events for an empty terminal output array. Valid
+`response.completed` remains mandatory. Explicit non-SSE types, incomplete or
+failed streams, duplicate/sparse completed items and JSON/HTML bodies do not
+become successful responses. Unexpected-body diagnostics do not expose contents.
+
+Verified on the corrected native executable:
+
+- Luna returned the exact requested reply at low, medium and high.
+- At low, Luna proposed one `search_memory` action for synthetic test-profile
+  content. The native approval dialog appeared before execution. After approval,
+  it received two results and reported that count correctly.
+- Read-only native audit confirmed `proposed`, `approved`, `succeeded`, exactly
+  one matching action, two results and a succeeded task.
+- Full process restart retained the protected account, model and low effort;
+  another real membership request completed without signing in again.
+- All 50 membership-focused tests pass, including 10 stream/provider tests.
+  The normal bundled native build and `git diff --check` pass.
+- The final full Rust suite passes 175 tests (101 library, 23 agent-runtime,
+  10 Evolution, 24 memory-foundation, 10 semantic-memory, 7 storage), with no
+  failures. All 65 frontend tests pass; Rust format checking passes.
+
+Executable SHA-256:
+`D45DE3F3E154433DE700516F7432D58FF31BE1DFF606C426B2A2F618A73C328B`.
+
+This supersedes the earlier chooser-only/live-inference gap, not the remaining
+release gates. The exact installed artifact has not yet been tested with this
+stream fix. Real token-expiry renewal, reconnect, quota exhaustion and remote
+sign-out remain separate live checks; synthetic coverage is not their acceptance.
+Chrome displayed `ERR_BLOCKED_BY_CLIENT` on the return page even though native
+callback/token exchange succeeded; that browser rendering issue is unresolved.
+Sol was available but unnecessary for these bounded tests and was not invoked.
+No private account identity, credential, host identifier or machine path is
+included in this receipt. No Alpha 4 release is claimed.
