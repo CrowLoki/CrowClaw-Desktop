@@ -17,9 +17,19 @@ import type {
   SelectedFolder,
   TaskCancellationResult,
   NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport, SemanticIndexReport,
+  EvolutionSnapshot, EvolutionProposal, EvolutionEvaluation, EvolutionRevision,
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
+  evolutionSnapshot: "crowclaw_evolution_snapshot",
+  saveEvolutionFeedback: "crowclaw_evolution_feedback",
+  draftEvolution: "crowclaw_evolution_draft",
+  reflectEvolution: "crowclaw_evolution_reflect",
+  evaluateEvolution: "crowclaw_evolution_evaluate",
+  rateEvolutionEvaluation: "crowclaw_evolution_rate",
+  decideEvolution: "crowclaw_evolution_decide",
+  restoreEvolution: "crowclaw_evolution_restore",
+  cancelEvolution: "crowclaw_evolution_cancel",
   bootstrap: "crowclaw_app_bootstrap",
   discoverEndpoints: "crowclaw_model_discover",
   testConnection: "crowclaw_model_test_connection",
@@ -60,6 +70,15 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
 
 export function createTauriGateway(): CrowClawGateway {
   return {
+    evolutionSnapshot: () => invokeNative<EvolutionSnapshot>(TAURI_COMMANDS.evolutionSnapshot),
+    saveEvolutionFeedback: (request) => invokeNative<void>(TAURI_COMMANDS.saveEvolutionFeedback, { request }),
+    draftEvolution: (request) => invokeNative<EvolutionProposal>(TAURI_COMMANDS.draftEvolution, { request }),
+    reflectEvolution: (request) => invokeNative<EvolutionProposal>(TAURI_COMMANDS.reflectEvolution, { request }),
+    evaluateEvolution: (request) => invokeNative<EvolutionEvaluation>(TAURI_COMMANDS.evaluateEvolution, { request }),
+    rateEvolutionEvaluation: (request) => invokeNative<void>(TAURI_COMMANDS.rateEvolutionEvaluation, { request }),
+    decideEvolution: (request) => invokeNative<EvolutionProposal>(TAURI_COMMANDS.decideEvolution, { request }),
+    restoreEvolution: (request) => invokeNative<EvolutionRevision>(TAURI_COMMANDS.restoreEvolution, { request }),
+    cancelEvolution: (requestId) => invokeNative<void>(TAURI_COMMANDS.cancelEvolution, { request: { requestId } }),
     memoryStatus: () => invokeNative<NativeMemoryStatus>(TAURI_COMMANDS.memoryStatus),
     configureMemory: (request: MemorySettings) => invokeNative<MemorySettings>(TAURI_COMMANDS.configureMemory, { request }),
     searchMemory: (request: MemoryQuery) => invokeNative<MemorySearchResult>(TAURI_COMMANDS.searchMemory, { request }),

@@ -468,6 +468,34 @@ select:disabled {
 .full-empty-state h2 { margin: 0 0 7px; font-size: 17px; }
 .full-empty-state p { max-width: 430px; margin: 0; color: var(--text-muted); font-size: 10px; }
 
+/* Governed evolution */
+.evolution-content { max-width: 1160px; margin-inline: auto; }
+.evolution-explanation { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.evolution-panel { margin-block: 22px; padding: 22px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface-raised); }
+.evolution-panel h2 { margin: 0 0 14px; font-size: 18px; }
+.evolution-panel h3 { margin: 0 0 8px; font-size: 14px; overflow-wrap: anywhere; }
+.evolution-panel p, .evolution-panel time, .evolution-panel summary { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.evolution-list { display: flex; flex-direction: column; gap: 14px; }
+.evolution-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.evolution-form { display: flex; flex-direction: column; gap: 10px; margin-block: 14px; }
+.evolution-form .field, .evolution-panel > .field { font-size: 12px; }
+.evolution-form input:not([type="radio"]), .evolution-form textarea, .evolution-form select, .evolution-panel > select { width: 100%; min-height: 42px; padding: 10px; color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; background: var(--field); font-size: 14px; }
+.evolution-form textarea { line-height: 1.6; resize: vertical; }
+.evolution-form .button { align-self: flex-start; }
+.evolution-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.evolution-options legend { color: var(--text-secondary); font-size: 12px; }
+.evolution-options label { display: flex; align-items: center; gap: 7px; min-height: 32px; font-size: 12px; }
+.evolution-options input { accent-color: var(--accent-bright); }
+.evolution-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-block: 14px; }
+.evolution-actions span { color: var(--text-muted); font-size: 12px; }
+.evolution-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-block: 16px; }
+.evolution-comparison > div { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
+.evolution-comparison h4 { margin: 0 0 8px; font-size: 13px; }
+.evolution-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.evolution-panel .evolution-warning { color: var(--warning); }
+.evolution-notice { color: var(--success); font-size: 12px; line-height: 1.6; }
+@media (max-width: 1050px) { .evolution-comparison { grid-template-columns: 1fr; } }
+
 /* Memory */
 .crowquant-panel,
 .activity-memory { max-width: 1160px; margin-right: auto; margin-left: auto; }

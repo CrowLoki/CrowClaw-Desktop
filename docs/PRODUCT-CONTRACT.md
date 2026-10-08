@@ -61,6 +61,54 @@ These are not guessed by the implementation:
 - any public Orion experience;
 - any scientific claim or research-publication decision.
 
+## Native governed evolution
+
+Crow authorized a native learning loop as part of the standalone roadmap. Its
+owner is CrowClaw's own SQLite database and Rust agent runtime.
+
+1. Review actual completed, failed and cancelled agent tasks and record explicit
+   quality feedback. Execution success alone is not a quality score.
+2. Write a proposal locally or explicitly ask the connected model to reflect on
+   one selected task. Preserve the submitted goal, original feedback/evidence,
+   requested model selector and reported model identity.
+3. Compare a typed evaluation prompt against the proposal's baseline and exact
+   candidate guidelines, using one frozen connection without tool execution.
+   Record both responses and reported identities; distinguish a model mismatch
+   or unavailable identity. Only the user assigns a response preference.
+4. Inspect/edit and explicitly apply or reject the proposal. Applying creates a
+   new immutable guideline revision. A stale base cannot overwrite newer work.
+5. New agent tasks include the adopted guidelines and record their revision;
+   existing task sessions retain their original revision. Guidelines do not
+   change native tool permissions or issue approval tokens.
+6. Restore earlier guidelines by creating another revision, preserving history.
+7. Keep reflection/comparison work visible and cancellable through Tasks even
+   after leaving Evolution. Cancellation wins before result publication; durable
+   result and task completion commit together.
+8. Preserve the data across restart, include it in native retained-data export,
+   and remove it when the user explicitly chooses full app-data removal.
+
+No source-code/weight self-modification, donor checkout, memory sidecar or paid
+service is introduced by this learning loop. A saved proposal or test comparison
+is not an automatic claim of improved intelligence.
+
+## Personal membership providers
+
+Crow additionally authorized each independent desktop install to connect its
+user's own eligible ChatGPT or Claude membership, while retaining existing model
+providers and local operation. Every install owns a stable opaque host identifier;
+account/workspace/client registrations and protected credentials remain separate.
+Model and reasoning-effort choices must come from and remain bound to the selected
+account. Reconnect/disconnect, quota/error handling and an actual intended request
+are acceptance requirements. No other project's sign-in, token, chat or memory is
+imported, and no API-key/paid-credit fallback is authorized for membership access.
+
+ChatGPT uses the released public Sign in with ChatGPT/Responses protocol. Claude
+membership requires a supported official runtime/route for this desktop client;
+Console/API billing is not a Pro replacement. Personal local-client eligibility
+does not establish an owner-subscription service for remote public customers.
+These are provider additions to implement and verify, not a current connected
+provider claim.
+
 ## Alpha 2 scoped CrowQuant integration
 
 The Alpha 1 boundary above remains part of the release history. Alpha 2 adds one bounded integration to CrowClaw itself: a local CrowQuant-compatible memory path. It does not import, rewrite, or modify the separate CrowQuant repository.

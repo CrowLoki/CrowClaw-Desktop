@@ -42,6 +42,7 @@ impl Storage {
             memory_exclusions: super::memory::exclusions_from(&transaction)?,
             memory_embedding_profiles: super::semantic::profiles_from(&transaction)?,
             memory_vectors: super::semantic::vectors_from(&transaction)?,
+            evolution: super::evolution::export_from(&transaction)?,
         };
         transaction.commit()?;
         Ok(export)
@@ -73,6 +74,11 @@ impl Storage {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(
             r#"
+            DELETE FROM evolution_evaluations;
+            DELETE FROM evolution_proposals;
+            DELETE FROM evolution_feedback;
+            UPDATE evolution_head SET revision=0 WHERE id=1;
+            DELETE FROM evolution_revisions WHERE revision<>0;
             DELETE FROM action_audit;
             DELETE FROM memory_vectors;
             DELETE FROM memory_embedding_profiles;
@@ -117,7 +123,11 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM memory_chunks) +
              (SELECT COUNT(*) FROM memory_exclusions) +
              (SELECT COUNT(*) FROM memory_embedding_profiles) +
-             (SELECT COUNT(*) FROM memory_vectors)"#,
+             (SELECT COUNT(*) FROM memory_vectors) +
+             (SELECT COUNT(*) FROM evolution_feedback) +
+             (SELECT COUNT(*) FROM evolution_proposals) +
+             (SELECT COUNT(*) FROM evolution_evaluations) +
+             (SELECT COUNT(*) FROM evolution_revisions WHERE revision<>0)"#,
         [],
         |row| row.get(0),
     )?;

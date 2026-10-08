@@ -18,6 +18,12 @@ fn open() -> (TempDir, Arc<Storage>, MemoryService) {
     (dir, storage, service)
 }
 
+fn remove_evolution_fixture_schema(connection: &rusqlite::Connection) {
+    // These disposable fixtures model older installed schemas, where the
+    // later evolution tables did not exist. Canonical records stay intact.
+    connection.execute_batch("DROP TABLE evolution_evaluations; DROP TABLE evolution_proposals; DROP TABLE evolution_feedback; DROP TABLE evolution_head; DROP TABLE evolution_revisions;").unwrap();
+}
+
 fn message(storage: &Storage, id: &str, role: MessageRole, text: &str) {
     if storage.get_conversation("conversation").unwrap().is_none() {
         storage
@@ -124,6 +130,7 @@ fn schema_four_one_sided_note_withdrawal_is_repaired_before_any_search() {
         connection
             .execute_batch("DELETE FROM memory_jobs; PRAGMA user_version=4;")
             .unwrap();
+        remove_evolution_fixture_schema(&connection);
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM memory_vectors", [], |row| row
@@ -638,6 +645,7 @@ fn schema_two_upgrade_preserves_original_message_and_crowquant_data() {
     let connection = rusqlite::Connection::open(&path).unwrap();
     // The disposable fixture is restored to schema 2, preserving all canonical
     // tables/bytes. No user database or checkout data is touched.
+    remove_evolution_fixture_schema(&connection);
     connection.execute_batch(RESTORE_ALPHA_TWO).unwrap();
     drop(connection);
     let reopened = Arc::new(Storage::open(dir.path()).unwrap());
@@ -674,6 +682,7 @@ fn failed_multi_version_upgrade_rolls_back_the_entire_schema_change() {
     drop(service);
     drop(storage);
     let connection = rusqlite::Connection::open(&path).unwrap();
+    remove_evolution_fixture_schema(&connection);
     connection.execute_batch(RESTORE_ALPHA_TWO).unwrap();
     // An unexpected name collision forces the final migration step to fail.
     connection

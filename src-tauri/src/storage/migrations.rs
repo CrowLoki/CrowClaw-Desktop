@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -34,6 +34,9 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     }
     if installed_version < 5 {
         migrate_to_v5(&transaction)?;
+    }
+    if installed_version < 6 {
+        migrate_to_v6(&transaction)?;
     }
 
     transaction.commit()?;
@@ -320,5 +323,48 @@ fn migrate_to_v5(connection: &Connection) -> StorageResult<()> {
         END;
     "#)?;
     connection.pragma_update(None, "user_version", 5u32)?;
+    Ok(())
+}
+
+fn migrate_to_v6(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(r#"
+        CREATE TABLE evolution_revisions (
+            revision INTEGER PRIMARY KEY CHECK(revision >= 0 AND revision <= 2147483647),
+            title TEXT NOT NULL, instructions TEXT NOT NULL, reason TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO evolution_revisions VALUES(0,'Initial behavior','','No adopted working guidelines',CAST(strftime('%s','now') AS INTEGER)*1000);
+        CREATE TABLE evolution_head (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            revision INTEGER NOT NULL REFERENCES evolution_revisions(revision)
+        );
+        INSERT INTO evolution_head VALUES(1,0);
+        CREATE TABLE evolution_feedback (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            rating TEXT NOT NULL CHECK(rating IN ('useful','needs_improvement','uncertain')),
+            note TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE evolution_proposals (
+            id TEXT PRIMARY KEY NOT NULL,
+            base_revision INTEGER NOT NULL REFERENCES evolution_revisions(revision),
+            title TEXT NOT NULL, rationale TEXT NOT NULL, instructions TEXT NOT NULL,
+            source_task_ids_json TEXT NOT NULL, model TEXT, reported_model TEXT, reflection_context_json TEXT,
+            status TEXT NOT NULL CHECK(status IN ('draft','applied','rejected')),
+            created_at_ms INTEGER NOT NULL, decided_at_ms INTEGER,
+            applied_revision INTEGER REFERENCES evolution_revisions(revision)
+        );
+        CREATE TABLE evolution_evaluations (
+            id TEXT PRIMARY KEY NOT NULL,
+            proposal_id TEXT NOT NULL REFERENCES evolution_proposals(id) ON DELETE CASCADE,
+            baseline_revision INTEGER NOT NULL REFERENCES evolution_revisions(revision), model TEXT NOT NULL, baseline_model TEXT, candidate_model TEXT,
+            candidate_instructions TEXT NOT NULL, prompt TEXT NOT NULL,
+            baseline_response TEXT NOT NULL, candidate_response TEXT NOT NULL,
+            preference TEXT CHECK(preference IN ('baseline','candidate','tie','neither')),
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX evolution_proposals_recent ON evolution_proposals(created_at_ms DESC,id);
+        CREATE INDEX evolution_evaluations_recent ON evolution_evaluations(created_at_ms DESC,id);
+    "#)?;
+    connection.pragma_update(None, "user_version", 6u32)?;
     Ok(())
 }

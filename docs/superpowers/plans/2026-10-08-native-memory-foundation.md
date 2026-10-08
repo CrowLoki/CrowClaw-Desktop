@@ -108,6 +108,60 @@ profile and the hosted installer lifecycle as already established.
 
 ## Next standalone capability slices
 
+### Current governed-evolution continuation — 2026-10-08
+
+Memory/CI delivery is merged in PR #3 at `b713bf1`. The active source branch is
+`codex/governed-evolution` in the existing attached checkout. Native schema 6,
+terminal-task feedback, manual/model proposals, two-response comparisons, explicit
+Apply/Reject, immutable revisions/restore, new-task guideline injection and
+revision attribution, global TaskCenter cancellation, and export/removal are
+implemented in the current source. They use no donor runtime or account state.
+The frontend passes 40 tests and its production build. Ten focused native evolution
+tests pass, including original reflection inputs after later feedback edits,
+reported-model identity, concurrent Apply arbitration, full removal and pre-request
+serialized-context bounds. Independent review findings are resolved. Both helpers
+are closed. Native UI/provider and packaged acceptance are still unfinished.
+
+The normal Cargo suite exposed a test-executable missing Common Controls v6
+manifest (`STATUS_ENTRYPOINT_NOT_FOUND`). `build.rs` now embeds the dependency in
+non-binary linked targets while preserving Tauri's existing binary manifest. The
+Windows manifest extractor confirms the unit executable's v6 dependency, and the
+original test command now starts/runs its tests. Production/native manifest and
+installed acceptance must still be exercised for this change.
+
+The subsequent IPv4 loopback transport failure remains open. It reproduces in
+ordinary blocking TCP and an independent .NET probe on the same port, before any
+CrowClaw HTTP/model code. IPv6 works on that same port. A scoped Packet Monitor
+trace reports discarded synthetic IPv4 handshake packets; firewall rule removal,
+forced test ports and a protocol switch have not been used as a fix. A temporary
+worker-mode experiment did not fix it and restored the original active inline
+mode. Owned capture/filter cleanup is verified; all diagnostic helpers are stopped.
+No persistent network/security setting was changed.
+
+WFP inspection identifies the installed Npcap 0.9982 packet-capture driver from
+2019 as an active loopback component. Its involvement is not yet proven causal.
+No accessible Packet.dll/wpcap.dll capture client was detected; this is not proof
+that no raw driver handles exist. The official Npcap 1.89 installer is downloaded
+privately and its Nmap Software LLC Authenticode signature verifies; it has not
+been executed. Next repair decision is a supported driver update/isolation with
+its licence and effects on existing capture tools understood, then the original
+IPv4 probe and normal Cargo suite must pass before dependent acceptance resumes.
+Private packet/WFP artifacts remain ignored in `.test-runtime`; do not publish
+machine/account data or turn this hypothesis into a verified root-cause claim.
+
+The coordinated membership addition is now part of this full goal: each person's
+own ChatGPT/Claude connection, independent install host ID, separated protected
+registration/account credentials, account-bound model/effort choices, and actual
+desktop request/reconnect/disconnect/quota acceptance. Preserve all existing
+providers. Do not transfer Embodiment credentials, import conversations/memory,
+share Crow's membership or use paid API fallback. Official direct protocol sources
+are [SIWC overview](https://developers.openai.com/siwc/token-sharing-open-source),
+[registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+and [models/inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+The other project's released harness evidence is provenance, not CrowClaw's
+implementation or live acceptance. CrowClaw remains the desktop exception; phone
+and hardware work stays with those independent projects.
+
 Carry Crow's approved roadmap forward after memory: governed recursive evolution; skills and capability support; CrowNest council/laboratory capabilities; evidence and experiment handling informed by SRH-HQRE; advanced CrowQuant; optional attributed collaborator support. Core installed behavior must operate without donor projects or private state.
 
 Crow additionally requested CrowClaw God mode on 2026-10-08. The matching candidate inspected read-only is `Crow-GodMod3`, whose current `CONTINUATION.md` records model pools, separate runtime profiles, diagnostics and text/image/audio modes. Its source includes AGPL-3.0 material and corresponding-source requirements, and its previous integration design was an optional plugin. Select a concrete native/offline module design before integrating it; do not make CrowClaw launch its website, require its checkout/gateway, or silently choose a different CrowClaw software licence. The God mode request remains outstanding in the full app goal.

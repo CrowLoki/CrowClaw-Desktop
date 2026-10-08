@@ -186,7 +186,25 @@ export type TaskCancellationResult = {
   summary: ConversationSummary | null;
 };
 
+export type EvolutionRating = "useful" | "needs_improvement" | "uncertain";
+export type EvolutionFeedback = { rating: EvolutionRating; note: string; updatedAtMs: number };
+export type EvolutionObservation = { taskId: string; title: string; outcome: "succeeded" | "failed" | "cancelled"; guidelineRevision: number | null; updatedAtMs: number; feedback: EvolutionFeedback | null };
+export type EvolutionRevision = { revision: number; title: string; instructions: string; reason: string; createdAtMs: number };
+export type EvolutionProposal = { id: string; baseRevision: number; title: string; rationale: string; instructions: string; sourceTaskIds: string[]; model: string | null; reportedModel: string | null; reflectionContext: Record<string, unknown> | null; status: "draft" | "applied" | "rejected"; createdAtMs: number; decidedAtMs: number | null; appliedRevision: number | null };
+export type EvolutionEvaluation = { id: string; proposalId: string; baselineRevision: number; model: string; baselineModel: string | null; candidateModel: string | null; candidateInstructions: string; prompt: string; baselineResponse: string; candidateResponse: string; preference: "baseline" | "candidate" | "tie" | "neither" | null; createdAtMs: number };
+export type EvolutionSnapshot = { active: EvolutionRevision; observations: EvolutionObservation[]; proposals: EvolutionProposal[]; revisions: EvolutionRevision[]; evaluations: EvolutionEvaluation[] };
+export type EvolutionDraftRequest = { title: string; rationale: string; instructions: string; sourceTaskIds: string[]; baseRevision: number };
+
 export interface CrowClawGateway {
+  evolutionSnapshot(): Promise<EvolutionSnapshot>;
+  saveEvolutionFeedback(request: { taskId: string; rating: EvolutionRating; note: string }): Promise<void>;
+  draftEvolution(request: EvolutionDraftRequest): Promise<EvolutionProposal>;
+  reflectEvolution(request: { requestId: string; taskId: string; goal: string }): Promise<EvolutionProposal>;
+  evaluateEvolution(request: { requestId: string; proposalId: string; instructions: string; prompt: string }): Promise<EvolutionEvaluation>;
+  rateEvolutionEvaluation(request: { id: string; preference: "baseline" | "candidate" | "tie" | "neither" }): Promise<void>;
+  decideEvolution(request: { id: string; decision: "apply" | "reject"; instructions: string; expectedRevision: number }): Promise<EvolutionProposal>;
+  restoreEvolution(request: { revision: number; expectedRevision: number }): Promise<EvolutionRevision>;
+  cancelEvolution(requestId: string): Promise<void>;
   bootstrap(): Promise<AppBootstrap>;
   discoverEndpoints(): Promise<DiscoveredEndpoint[]>;
   testConnection(draft: ModelEndpointDraft): Promise<ConnectionTestResult>;

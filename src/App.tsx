@@ -7,6 +7,7 @@ import { ChatWorkspace } from "./components/ChatWorkspace";
 import { ConnectionsView } from "./components/ConnectionsView";
 import { ConversationSidebar } from "./components/ConversationSidebar";
 import { ErrorScreen } from "./components/ErrorScreen";
+import { EvolutionView } from "./components/EvolutionView";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { MemoryView } from "./components/MemoryView";
 import { Onboarding } from "./components/Onboarding";
@@ -344,6 +345,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
           onConnect={connectModel}
         />
       )}
+      {view === "evolution" && <EvolutionView gateway={gateway} connection={bootstrap.connection} developmentPreview={!isTauriRuntime() && import.meta.env.DEV} />}
       {view === "settings" && <SettingsView settings={bootstrap.settings} onSave={saveSettings} />}
       {bootstrap.pendingActions[0] && (
         <ApprovalDialog action={bootstrap.pendingActions[0]} deciding={deciding} onDecision={(decision) => void decideAction(decision)} />

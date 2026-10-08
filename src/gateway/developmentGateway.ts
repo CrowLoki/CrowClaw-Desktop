@@ -20,6 +20,7 @@ import type {
   SelectedFolder,
   TaskCancellationResult,
   MemorySettings, MemoryQuery, NativeMemoryHit,
+  EvolutionSnapshot, EvolutionProposal, EvolutionRevision, EvolutionDraftRequest, EvolutionObservation,
 } from "./contracts";
 
 type DevelopmentGatewayOptions = {
@@ -169,6 +170,49 @@ export function createDevelopmentGateway(
     },
   ];
   let crowQuantMemories: CrowQuantMemory[] = [];
+  // Session-only simulation. No provider call, native persistence or quality claim.
+  const initialRevision: EvolutionRevision = { revision: 0, title: "Initial guidelines", instructions: "", reason: "Development simulation baseline", createdAtMs: Date.now() };
+  const evolution: EvolutionSnapshot = { active: initialRevision, observations: [], proposals: [], revisions: [initialRevision], evaluations: [] };
+  const taskRevisions = new Map<string, number>();
+  const evolutionRequests = new Map<string, { cancelled: boolean }>();
+
+  function checkRevision(expected: number) {
+    if (expected !== evolution.active.revision) throw new Error(`Stale guideline revision: expected ${expected}, active ${evolution.active.revision}. Refresh and review before trying again.`);
+  }
+
+  function requireProposal(id: string) {
+    const proposal = evolution.proposals.find((value) => value.id === id);
+    if (!proposal) throw new Error("That proposal is no longer available.");
+    return proposal;
+  }
+
+  function addDraft(request: EvolutionDraftRequest, model: string | null = null): EvolutionProposal {
+    checkRevision(request.baseRevision);
+    if (!request.title.trim() || !request.rationale.trim() || !request.instructions.trim()) throw new Error("Enter a title, reason and candidate instructions.");
+    if (request.sourceTaskIds.some((id) => !evolution.observations.some((item) => item.taskId === id))) throw new Error("Choose a retained terminal task.");
+    const proposal: EvolutionProposal = { ...clone(request), model, reportedModel: null, reflectionContext: null, id: createId("proposal", ++counter), status: "draft", createdAtMs: Date.now(), decidedAtMs: null, appliedRevision: null };
+    evolution.proposals.unshift(proposal);
+    return clone(proposal);
+  }
+
+  async function simulateModel<T>(requestId: string, work: () => T): Promise<T> {
+    if (!connection || connection.status !== "connected") throw new Error("Connect a model before requesting reflection or comparison.");
+    if (!requestId || evolutionRequests.has(requestId)) throw new Error("Model request ID must be unique.");
+    const token = { cancelled: false };
+    evolutionRequests.set(requestId, token);
+    try {
+      await pause();
+      if (token.cancelled) throw new Error("Model request cancelled.");
+      return work();
+    } finally { evolutionRequests.delete(requestId); }
+  }
+
+  function addRevision(title: string, instructions: string, reason: string): EvolutionRevision {
+    const revision = { revision: evolution.active.revision + 1, title, instructions, reason, createdAtMs: Date.now() };
+    evolution.active = revision;
+    evolution.revisions.unshift(revision);
+    return clone(revision);
+  }
 
   async function pause(): Promise<void> {
     if ((options.delayMs ?? 90) <= 0) return;
@@ -183,9 +227,80 @@ export function createDevelopmentGateway(
 
   function replaceTask(task: AgentTask): void {
     tasks = [task, ...tasks.filter(({ id }) => id !== task.id)];
+    if (["completed", "failed", "cancelled"].includes(task.status)) {
+      const feedback = evolution.observations.find((item) => item.taskId === task.id)?.feedback ?? null;
+      const observation: EvolutionObservation = { taskId: task.id, title: task.title, outcome: task.status === "completed" ? "succeeded" : task.status === "failed" ? "failed" : "cancelled", guidelineRevision: taskRevisions.get(task.id) ?? null, updatedAtMs: Date.parse(task.updatedAt), feedback };
+      evolution.observations = [observation, ...evolution.observations.filter((item) => item.taskId !== task.id)].slice(0, 50);
+    }
   }
 
   return {
+    async evolutionSnapshot() { await pause(); return clone({ ...evolution, proposals: evolution.proposals.slice(0, 100), revisions: evolution.revisions.slice(0, 100), evaluations: evolution.evaluations.slice(0, 100) }); },
+    async saveEvolutionFeedback(request) {
+      await pause();
+      const observation = evolution.observations.find((item) => item.taskId === request.taskId);
+      if (!observation) throw new Error("That terminal task is no longer available.");
+      observation.feedback = { rating: request.rating, note: request.note, updatedAtMs: Date.now() };
+    },
+    async draftEvolution(request) { await pause(); return addDraft(request); },
+    async reflectEvolution(request) {
+      const baseRevision = evolution.active.revision;
+      const model = connection?.model ?? "";
+      return simulateModel(request.requestId, () => {
+        if (!request.goal.trim()) throw new Error("Enter a reflection goal.");
+        const task = evolution.observations.find((item) => item.taskId === request.taskId);
+        if (!task) throw new Error("Choose a retained terminal task.");
+        return addDraft({ title: "Simulated reflection", rationale: `Development simulation for ${task.title}. No model was called and no improvement is proven.`, instructions: `Simulated candidate guideline: ${request.goal.trim()}`, sourceTaskIds: [task.taskId], baseRevision }, model);
+      });
+    },
+    async evaluateEvolution(request) {
+      const baseline = clone(evolution.active);
+      const model = connection?.model ?? "";
+      return simulateModel(request.requestId, () => {
+        checkRevision(baseline.revision);
+        const proposal = requireProposal(request.proposalId);
+        if (proposal.status !== "draft") throw new Error("Only a draft proposal can be compared.");
+        checkRevision(proposal.baseRevision);
+        if (!request.instructions.trim() || !request.prompt.trim()) throw new Error("Enter candidate instructions and a comparison prompt.");
+        const evaluation = { id: createId("evaluation", ++counter), proposalId: proposal.id, model, baselineModel:null,candidateModel:null,baselineRevision: baseline.revision, candidateInstructions: request.instructions, prompt: request.prompt, baselineResponse: `Simulated baseline response to: ${request.prompt}\nGuidelines: ${baseline.instructions || "No additional guidelines"}`, candidateResponse: `Simulated candidate response to: ${request.prompt}\nGuidelines: ${request.instructions}`, preference: null, createdAtMs: Date.now() };
+        evolution.evaluations.unshift(evaluation);
+        return clone(evaluation);
+      });
+    },
+    async rateEvolutionEvaluation(request) {
+      await pause();
+      const evaluation = evolution.evaluations.find((item) => item.id === request.id);
+      if (!evaluation) throw new Error("That comparison is no longer available.");
+      evaluation.preference = request.preference;
+    },
+    async decideEvolution(request) {
+      await pause();
+      checkRevision(request.expectedRevision);
+      const proposal = requireProposal(request.id);
+      if (proposal.status !== "draft") throw new Error("That proposal has already been decided.");
+      if (request.decision === "apply") {
+        checkRevision(proposal.baseRevision);
+        if (!request.instructions.trim()) throw new Error("Enter candidate instructions before applying.");
+        proposal.appliedRevision = addRevision(proposal.title, request.instructions, proposal.rationale).revision;
+      }
+      proposal.instructions = request.instructions;
+      proposal.status = request.decision === "apply" ? "applied" : "rejected";
+      proposal.decidedAtMs = Date.now();
+      return clone(proposal);
+    },
+    async restoreEvolution(request) {
+      await pause();
+      checkRevision(request.expectedRevision);
+      const previous = evolution.revisions.find((item) => item.revision === request.revision);
+      if (!previous) throw new Error("That guideline revision is no longer available.");
+      if (previous.revision === evolution.active.revision) throw new Error("That guideline revision is already active.");
+      return addRevision(previous.title, previous.instructions, `Restored revision ${previous.revision}.`);
+    },
+    async cancelEvolution(requestId) {
+      const token = evolutionRequests.get(requestId);
+      if (!token) throw new Error("That model request is no longer running.");
+      token.cancelled = true;
+    },
     async bootstrap(): Promise<AppBootstrap> {
       await pause();
       const summaries = [...conversations.values()]
@@ -311,6 +426,7 @@ export function createDevelopmentGateway(
         updatedAt: timestamp,
         cancellable: true,
       };
+      taskRevisions.set(task.id, evolution.active.revision);
 
       const requestsFiles =
         selectedFolder !== null || /\b(inspect|folder|file|read|summari[sz]e)\b/i.test(content);

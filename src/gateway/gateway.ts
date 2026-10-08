@@ -30,6 +30,15 @@ class UnavailableGateway implements CrowClawGateway {
   exportMemory = async () => this.unavailable();
   admitFileMemory = async () => this.unavailable();
   syncSemanticMemory = async () => this.unavailable();
+  evolutionSnapshot = async () => this.unavailable();
+  saveEvolutionFeedback = async () => this.unavailable();
+  draftEvolution = async () => this.unavailable();
+  reflectEvolution = async () => this.unavailable();
+  evaluateEvolution = async () => this.unavailable();
+  rateEvolutionEvaluation = async () => this.unavailable();
+  decideEvolution = async () => this.unavailable();
+  restoreEvolution = async () => this.unavailable();
+  cancelEvolution = async () => this.unavailable();
 }
 
 export function createCrowClawGateway(): CrowClawGateway {

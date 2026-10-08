@@ -2,6 +2,7 @@ pub mod agent;
 mod app;
 pub mod crowquant;
 mod crowquant_memory;
+pub mod evolution;
 pub mod memory;
 mod memory_export;
 pub mod startup;
@@ -11,7 +12,10 @@ pub mod tools;
 use app::{
     crowclaw_action_decide, crowclaw_app_bootstrap, crowclaw_chat_send,
     crowclaw_conversation_create, crowclaw_conversation_get, crowclaw_crowquant_list,
-    crowclaw_crowquant_recall, crowclaw_crowquant_remember, crowclaw_folder_select,
+    crowclaw_crowquant_recall, crowclaw_crowquant_remember, crowclaw_evolution_cancel,
+    crowclaw_evolution_decide, crowclaw_evolution_draft, crowclaw_evolution_evaluate,
+    crowclaw_evolution_feedback, crowclaw_evolution_rate, crowclaw_evolution_reflect,
+    crowclaw_evolution_restore, crowclaw_evolution_snapshot, crowclaw_folder_select,
     crowclaw_memory_admit_file, crowclaw_memory_configure, crowclaw_memory_export,
     crowclaw_memory_rebuild, crowclaw_memory_search, crowclaw_memory_semantic_sync,
     crowclaw_memory_status, crowclaw_memory_sync, crowclaw_memory_withdraw, crowclaw_model_connect,
@@ -76,6 +80,15 @@ pub fn run() {
             crowclaw_memory_export,
             crowclaw_memory_admit_file,
             crowclaw_memory_semantic_sync,
+            crowclaw_evolution_snapshot,
+            crowclaw_evolution_feedback,
+            crowclaw_evolution_draft,
+            crowclaw_evolution_reflect,
+            crowclaw_evolution_evaluate,
+            crowclaw_evolution_rate,
+            crowclaw_evolution_decide,
+            crowclaw_evolution_restore,
+            crowclaw_evolution_cancel,
         ])
         .run(context)
         .expect("error while running tauri application");

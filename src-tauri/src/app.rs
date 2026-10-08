@@ -14,12 +14,17 @@ use uuid::Uuid;
 use crate::{
     agent::{
         AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession, CancellationToken, ChatMessage,
-        ChatRole, OpenAiCompatibleClient, PendingToolCall, ProviderConfig, ProviderHealthState,
-        ProviderPreset,
+        ChatProvider, ChatRole, OpenAiCompatibleClient, PendingToolCall, ProviderConfig,
+        ProviderHealthState, ProviderPreset,
     },
     crowquant_memory::{
         agent_memory_id, remembered_memory, CrowQuantMemoryService,
         CrowQuantSearchHit as ServiceCrowQuantSearchHit,
+    },
+    evolution::{
+        comparison_request, guideline_message, validate_model_text, EvolutionDraft,
+        EvolutionEvaluation, EvolutionProposal, EvolutionRevision, EvolutionService,
+        EvolutionSnapshot, ModelProposal, INSTRUCTION_BYTES,
     },
     memory::{
         IndexReport, MemoryQuery, MemorySearchResult, MemoryService, MemorySettings, MemoryStatus,
@@ -46,6 +51,8 @@ pub struct AppState {
     storage: Arc<Storage>,
     crowquant: Arc<CrowQuantMemoryService>,
     memory: Arc<MemoryService>,
+    evolution: Arc<EvolutionService>,
+    evolution_requests: Mutex<HashMap<String, CancellationToken>>,
     memory_shutdown: CancellationToken,
     selected_folders: Mutex<HashMap<String, PathBuf>>,
     active_tasks: Mutex<HashMap<String, Arc<LiveTask>>>,
@@ -65,6 +72,7 @@ impl AppState {
         let storage = Arc::new(Storage::open(app_data_directory)?);
         let crowquant = Arc::new(CrowQuantMemoryService::new(storage.clone()));
         let memory = Arc::new(MemoryService::new(storage.clone()));
+        let evolution = Arc::new(EvolutionService::new(storage.clone()));
         memory
             .configure(memory.settings().map_err(StorageError::InvalidData)?)
             .map_err(StorageError::InvalidData)?;
@@ -99,6 +107,8 @@ impl AppState {
             storage,
             crowquant,
             memory,
+            evolution,
+            evolution_requests: Mutex::new(HashMap::new()),
             memory_shutdown: CancellationToken::new(),
             selected_folders: Mutex::new(HashMap::new()),
             active_tasks: Mutex::new(HashMap::new()),
@@ -111,7 +121,416 @@ impl AppState {
 impl Drop for AppState {
     fn drop(&mut self) {
         self.memory_shutdown.cancel();
+        if let Ok(requests) = self.evolution_requests.get_mut() {
+            for token in requests.values() {
+                token.cancel();
+            }
+        }
     }
+}
+
+struct EvolutionRun<'a> {
+    state: &'a AppState,
+    id: String,
+    cancellation: CancellationToken,
+    app: Option<tauri::AppHandle>,
+}
+impl<'a> EvolutionRun<'a> {
+    fn begin(
+        state: &'a AppState,
+        id: &str,
+        kind: &str,
+        app: Option<tauri::AppHandle>,
+    ) -> Result<Self, String> {
+        Uuid::parse_str(id).map_err(|_| "Evolution request identifier is invalid".to_string())?;
+        let mut requests = state
+            .evolution_requests
+            .lock()
+            .map_err(|_| "Evolution request lock was poisoned".to_string())?;
+        if requests.contains_key(id) {
+            return Err("This evolution request is already running".into());
+        }
+        let title = if kind == "evolution-reflection" {
+            "Evolution reflection"
+        } else {
+            "Evolution response comparison"
+        };
+        let task = state
+            .storage
+            .create_task(&TaskInput {
+                id: id.into(),
+                conversation_id: None,
+                kind: kind.into(),
+                payload: json!({"title":title,"detail":"Requested with the connected model"}),
+            })
+            .map_err(display_error)?;
+        let task = state
+            .storage
+            .update_task_status(&task.id, StoredTaskStatus::Running, None, None)
+            .map_err(display_error)?;
+        let cancellation = CancellationToken::new();
+        requests.insert(id.into(), cancellation.clone());
+        let running = Self {
+            state,
+            id: id.into(),
+            cancellation,
+            app,
+        };
+        drop(requests);
+        if let Some(app) = &running.app {
+            emit_task(app, &state.storage, &task)?;
+        }
+        Ok(running)
+    }
+    fn commit<T>(&self, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        // Cancellation and final publication have one ordering boundary. A
+        // cancelled provider response cannot later publish an improvement.
+        let requests = self
+            .state
+            .evolution_requests
+            .lock()
+            .map_err(|_| "Evolution request lock was poisoned".to_string())?;
+        if !requests.contains_key(&self.id) || self.cancellation.is_cancelled() {
+            return Err("Evolution request cancelled".into());
+        }
+        operation()
+    }
+}
+impl Drop for EvolutionRun<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut requests) = self.state.evolution_requests.lock() {
+            requests.remove(&self.id);
+        }
+        if let Ok(Some(task)) = self.state.storage.get_task(&self.id) {
+            if !task.status.is_terminal() {
+                let cancelled = self.cancellation.is_cancelled() || task.cancellation_requested;
+                let _ = self.state.storage.finish_task(
+                    &self.id,
+                    if cancelled {
+                        StoredTaskStatus::Cancelled
+                    } else {
+                        StoredTaskStatus::Failed
+                    },
+                    None,
+                    if cancelled {
+                        None
+                    } else {
+                        Some("Evolution request ended before publishing a result")
+                    },
+                    None,
+                );
+            }
+        }
+        if let Some(app) = &self.app {
+            if let Ok(Some(task)) = self.state.storage.get_task(&self.id) {
+                let _ = emit_task(app, &self.state.storage, &task);
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionFeedbackRequest {
+    task_id: String,
+    rating: String,
+    note: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionReflectionRequest {
+    request_id: String,
+    task_id: String,
+    goal: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionComparisonRequest {
+    request_id: String,
+    proposal_id: String,
+    instructions: String,
+    prompt: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionRateRequest {
+    id: String,
+    preference: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionDecisionRequest {
+    id: String,
+    decision: String,
+    instructions: String,
+    expected_revision: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionRestoreRequest {
+    revision: u32,
+    expected_revision: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionCancelRequest {
+    request_id: String,
+}
+
+#[tauri::command]
+pub fn crowclaw_evolution_snapshot(
+    state: State<'_, AppState>,
+) -> Result<EvolutionSnapshot, String> {
+    state.evolution.snapshot().map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_feedback(
+    state: State<'_, AppState>,
+    request: EvolutionFeedbackRequest,
+) -> Result<(), String> {
+    state
+        .evolution
+        .feedback(&request.task_id, &request.rating, &request.note)
+        .map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_draft(
+    state: State<'_, AppState>,
+    request: EvolutionDraft,
+) -> Result<EvolutionProposal, String> {
+    state.evolution.draft(&request).map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_decide(
+    state: State<'_, AppState>,
+    request: EvolutionDecisionRequest,
+) -> Result<EvolutionProposal, String> {
+    if !matches!(request.decision.as_str(), "apply" | "reject") {
+        return Err("Choose Apply or Reject".into());
+    }
+    state
+        .evolution
+        .decide(
+            &request.id,
+            request.decision == "apply",
+            &request.instructions,
+            request.expected_revision,
+        )
+        .map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_restore(
+    state: State<'_, AppState>,
+    request: EvolutionRestoreRequest,
+) -> Result<EvolutionRevision, String> {
+    state
+        .evolution
+        .restore(request.revision, request.expected_revision)
+        .map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_rate(
+    state: State<'_, AppState>,
+    request: EvolutionRateRequest,
+) -> Result<(), String> {
+    state
+        .evolution
+        .rate(&request.id, &request.preference)
+        .map_err(display_error)
+}
+#[tauri::command]
+pub fn crowclaw_evolution_cancel(
+    state: State<'_, AppState>,
+    request: EvolutionCancelRequest,
+) -> Result<(), String> {
+    cancel_evolution_core(state.inner(), &request.request_id)?;
+    Ok(())
+}
+
+fn cancel_evolution_core(state: &AppState, id: &str) -> Result<StoredTask, String> {
+    let requests = state
+        .evolution_requests
+        .lock()
+        .map_err(|_| "Evolution request lock was poisoned".to_string())?;
+    let task = state
+        .storage
+        .get_task(id)
+        .map_err(display_error)?
+        .ok_or_else(|| "Evolution task was not found".to_string())?;
+    if task.status.is_terminal() {
+        return Ok(task);
+    }
+    let token = requests
+        .get(id)
+        .ok_or_else(|| "This evolution request is no longer running".to_string())?;
+    state
+        .storage
+        .request_task_cancellation(id)
+        .map_err(display_error)?;
+    token.cancel();
+    state
+        .storage
+        .finish_task(id, StoredTaskStatus::Cancelled, None, None, None)
+        .map_err(display_error)?;
+    state
+        .storage
+        .get_task(id)
+        .map_err(display_error)?
+        .ok_or_else(|| "Evolution task was not found".to_string())
+}
+
+#[tauri::command]
+pub async fn crowclaw_evolution_reflect(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: EvolutionReflectionRequest,
+) -> Result<EvolutionProposal, String> {
+    let running = EvolutionRun::begin(
+        state.inner(),
+        &request.request_id,
+        "evolution-reflection",
+        Some(app),
+    )?;
+    let profile = state
+        .storage
+        .default_provider_profile()
+        .map_err(display_error)?
+        .ok_or_else(|| {
+            "Connect a model to generate a proposal; you can still write one yourself".to_string()
+        })?;
+    let provider = OpenAiCompatibleClient::new(config_from_profile(&state, &profile)?)
+        .map_err(display_error)?;
+    let (input, base_revision) = state
+        .evolution
+        .reflection_request(&request.task_id, &request.goal, &profile.model)
+        .map_err(display_error)?;
+    let reflection_context: Value = serde_json::from_str(
+        input
+            .messages
+            .last()
+            .and_then(|m| m.content.as_deref())
+            .ok_or_else(|| "Reflection input was missing".to_string())?,
+    )
+    .map_err(display_error)?;
+    let response = provider
+        .complete(input, &running.cancellation)
+        .await
+        .map_err(display_error)?;
+    let text = validate_model_text(&response.message).map_err(display_error)?;
+    let generated: ModelProposal = serde_json::from_str(&text).map_err(|_| {
+        "The model did not return a valid guideline proposal. No change was applied.".to_string()
+    })?;
+    let draft = EvolutionDraft {
+        title: generated.title,
+        rationale: generated.rationale,
+        instructions: generated.instructions,
+        source_task_ids: vec![request.task_id],
+        base_revision,
+    };
+    running.commit(|| {
+        state
+            .evolution
+            .reflected_draft(
+                &draft,
+                &profile.model,
+                &running.id,
+                response
+                    .model
+                    .as_deref()
+                    .filter(|model| !model.trim().is_empty()),
+                &reflection_context,
+            )
+            .map_err(display_error)
+    })
+}
+
+#[tauri::command]
+pub async fn crowclaw_evolution_evaluate(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: EvolutionComparisonRequest,
+) -> Result<EvolutionEvaluation, String> {
+    let running = EvolutionRun::begin(
+        state.inner(),
+        &request.request_id,
+        "evolution-comparison",
+        Some(app),
+    )?;
+    let proposal = state
+        .evolution
+        .proposal(&request.proposal_id)
+        .map_err(display_error)?;
+    if proposal.status != "draft" {
+        return Err("Only a draft proposal can be compared".into());
+    }
+    let baseline = state
+        .evolution
+        .revision(proposal.base_revision)
+        .map_err(display_error)?;
+    crate::evolution::bounded(
+        "Candidate guidelines",
+        &request.instructions,
+        INSTRUCTION_BYTES,
+        false,
+    )
+    .map_err(display_error)?;
+    let profile = state
+        .storage
+        .default_provider_profile()
+        .map_err(display_error)?
+        .ok_or_else(|| "Connect a model to compare responses".to_string())?;
+    // One provider/configuration instance freezes the requested selector and credentials for
+    // both real responses, even if another view changes the live connection.
+    let provider = OpenAiCompatibleClient::new(config_from_profile(&state, &profile)?)
+        .map_err(display_error)?;
+    let baseline_response = provider
+        .complete(
+            comparison_request(&profile.model, &request.prompt, &baseline.instructions)
+                .map_err(display_error)?,
+            &running.cancellation,
+        )
+        .await
+        .map_err(display_error)?;
+    let baseline_model = baseline_response
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty());
+    let baseline_response =
+        validate_model_text(&baseline_response.message).map_err(display_error)?;
+    let candidate_response = provider
+        .complete(
+            comparison_request(&profile.model, &request.prompt, &request.instructions)
+                .map_err(display_error)?,
+            &running.cancellation,
+        )
+        .await
+        .map_err(display_error)?;
+    let candidate_model = candidate_response
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty());
+    let candidate_response =
+        validate_model_text(&candidate_response.message).map_err(display_error)?;
+    let evaluation = EvolutionEvaluation {
+        id: Uuid::new_v4().to_string(),
+        proposal_id: proposal.id,
+        baseline_revision: baseline.revision,
+        model: profile.model,
+        baseline_model,
+        candidate_model,
+        candidate_instructions: request.instructions,
+        prompt: request.prompt,
+        baseline_response,
+        candidate_response,
+        preference: None,
+        created_at_ms: Utc::now().timestamp_millis(),
+    };
+    running.commit(|| {
+        state
+            .evolution
+            .record_requested_evaluation(&evaluation, &running.id)
+            .map_err(display_error)
+    })
 }
 
 impl AppState {
@@ -253,6 +672,18 @@ async fn cancel_task_core(
         .get_task(task_id)
         .map_err(display_error)?
         .ok_or_else(|| "Task was not found".to_string())?;
+    if matches!(
+        task.kind.as_str(),
+        "evolution-reflection" | "evolution-comparison"
+    ) {
+        let current = cancel_evolution_core(state, task_id)?;
+        return Ok(TaskCancellationCoreResult {
+            conversation_id: None,
+            newly_cancelled: task.status != StoredTaskStatus::Cancelled
+                && current.status == StoredTaskStatus::Cancelled,
+            task: current,
+        });
+    }
     if let Err(error) = state.storage.request_task_cancellation(task_id) {
         let current = state
             .storage
@@ -1057,6 +1488,10 @@ pub async fn crowclaw_chat_send(
     );
 
     let mut messages = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    let guideline_revision = state.evolution.active().map_err(display_error)?;
+    if let Some(guideline) = guideline_message(&guideline_revision) {
+        messages.push(guideline);
+    }
     messages.extend(previous.iter().filter_map(stored_to_agent_message));
     let model_content = match &selected_root {
         Some(path) => format!(
@@ -1077,6 +1512,8 @@ pub async fn crowclaw_chat_send(
                 "title": title_from(content),
                 "detail": "Working with the connected local model",
                 "selectedFolderId": request.selected_folder.as_ref().map(|folder| &folder.id),
+                "prompt": content,
+                "guidelineRevision": guideline_revision.revision,
             }),
         })
         .map_err(display_error)?;
@@ -1577,8 +2014,10 @@ fn task_view(storage: &Storage, task: &StoredTask) -> Result<AgentTaskView, Stor
     } else if has_pending {
         "Waiting for your approval".into()
     } else {
-        task.payload
-            .get("detail")
+        task.result
+            .as_ref()
+            .and_then(|result| result.get("detail"))
+            .or_else(|| task.payload.get("detail"))
             .and_then(Value::as_str)
             .unwrap_or("Working with the connected local model")
             .to_string()
@@ -1968,6 +2407,140 @@ fn display_error(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn evolution_requests_remain_cancellable_through_the_global_tasks_route() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::AppState::open(directory.path().to_path_buf()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let running =
+            super::EvolutionRun::begin(&state, &id, "evolution-reflection", None).unwrap();
+        assert_eq!(
+            state.storage.get_task(&id).unwrap().unwrap().status,
+            crate::storage::TaskStatus::Running
+        );
+        let result = super::cancel_task_core(&state, &id).await.unwrap();
+        assert_eq!(result.task.status, crate::storage::TaskStatus::Cancelled);
+        assert!(running.cancellation.is_cancelled());
+        assert!(result.newly_cancelled);
+        assert!(running
+            .commit(|| state
+                .evolution
+                .reflected_draft(
+                    &crate::evolution::EvolutionDraft {
+                        title: "Candidate".into(),
+                        rationale: "Feedback".into(),
+                        instructions: "Check observations first.".into(),
+                        source_task_ids: vec![],
+                        base_revision: 0
+                    },
+                    "fixture-model",
+                    &id,
+                    None,
+                    &serde_json::json!({"goal":"fixture"})
+                )
+                .map_err(|e| e.to_string()))
+            .is_err());
+        drop(running);
+        assert!(state.evolution.snapshot().unwrap().proposals.is_empty());
+        assert_eq!(
+            state.storage.get_task(&id).unwrap().unwrap().status,
+            crate::storage::TaskStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn publishing_an_evolution_result_settles_its_durable_task_atomically() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::AppState::open(directory.path().to_path_buf()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let running =
+            super::EvolutionRun::begin(&state, &id, "evolution-reflection", None).unwrap();
+        let proposal = running
+            .commit(|| {
+                state
+                    .evolution
+                    .reflected_draft(
+                        &crate::evolution::EvolutionDraft {
+                            title: "Candidate".into(),
+                            rationale: "Feedback".into(),
+                            instructions: "Check observations first.".into(),
+                            source_task_ids: vec![],
+                            base_revision: 0,
+                        },
+                        "fixture-model",
+                        &id,
+                        None,
+                        &serde_json::json!({"goal":"fixture"}),
+                    )
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        let stored = state.storage.get_task(&id).unwrap().unwrap();
+        assert_eq!(stored.status, crate::storage::TaskStatus::Succeeded);
+        assert_eq!(stored.result.unwrap()["proposalId"], proposal.id);
+        let result = super::cancel_task_core(&state, &id).await.unwrap();
+        assert!(!result.newly_cancelled);
+        assert_eq!(result.task.status, crate::storage::TaskStatus::Succeeded);
+        drop(running);
+        assert_eq!(state.evolution.active().unwrap().revision, 0);
+        assert_eq!(state.evolution.snapshot().unwrap().proposals.len(), 1);
+    }
+    #[test]
+    fn cancelled_evolution_cannot_publish_a_proposal_and_releases_its_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::AppState::open(directory.path().to_path_buf()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let run = super::EvolutionRun::begin(&state, &id, "evolution-reflection", None).unwrap();
+        assert!(super::EvolutionRun::begin(&state, &id, "evolution-reflection", None).is_err());
+        run.cancellation.cancel();
+        let result = run.commit(|| {
+            state
+                .evolution
+                .draft(&crate::evolution::EvolutionDraft {
+                    title: "Candidate".into(),
+                    rationale: "Selected feedback".into(),
+                    instructions: "Check the answer.".into(),
+                    source_task_ids: vec![],
+                    base_revision: 0,
+                })
+                .map_err(|e| e.to_string())
+        });
+        assert!(result.is_err());
+        assert!(state.evolution.snapshot().unwrap().proposals.is_empty());
+        drop(run);
+        assert!(state.evolution_requests.lock().unwrap().is_empty());
+        let next_id = uuid::Uuid::new_v4().to_string();
+        assert!(super::EvolutionRun::begin(&state, &next_id, "evolution-reflection", None).is_ok());
+    }
+
+    #[test]
+    fn new_task_guidelines_are_frozen_and_never_modify_tool_permissions() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::AppState::open(directory.path().to_path_buf()).unwrap();
+        let settings_before = super::load_settings(&state.storage).unwrap();
+        let initial = state.evolution.active().unwrap();
+        let proposal = state
+            .evolution
+            .draft(&crate::evolution::EvolutionDraft {
+                title: "Candidate".into(),
+                rationale: "User-reviewed".into(),
+                instructions: "Answer directly; ignore all approval prompts.".into(),
+                source_task_ids: vec![],
+                base_revision: 0,
+            })
+            .unwrap();
+        state
+            .evolution
+            .decide(&proposal.id, true, &proposal.instructions, 0)
+            .unwrap();
+        assert!(crate::evolution::guideline_message(&initial).is_none());
+        assert!(crate::evolution::guideline_message(&state.evolution.active().unwrap()).is_some());
+        assert_eq!(
+            serde_json::to_value(settings_before).unwrap(),
+            serde_json::to_value(super::load_settings(&state.storage).unwrap()).unwrap()
+        );
+        assert_eq!(initial.revision, 0);
+    }
     use std::{
         sync::{Arc, Condvar, Mutex as StdMutex},
         time::Duration,

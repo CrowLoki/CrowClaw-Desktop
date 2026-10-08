@@ -2,6 +2,8 @@ mod actions;
 mod conversations;
 mod crowquant;
 mod error;
+mod evolution;
+pub mod evolution_types;
 mod memory;
 mod migrations;
 mod models;

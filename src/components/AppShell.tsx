@@ -5,12 +5,13 @@ import {
   ListTodo,
   MessageSquareText,
   Settings,
+  Sprout,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentTask, ModelConnection } from "../gateway/contracts";
 import { BrandMark } from "./BrandMark";
 
-export type AppView = "chat" | "tasks" | "memory" | "connections" | "settings";
+export type AppView = "chat" | "tasks" | "memory" | "evolution" | "connections" | "settings";
 
 type AppShellProps = {
   view: AppView;
@@ -26,6 +27,7 @@ const navigation = [
   { id: "chat", label: "Chat", icon: MessageSquareText },
   { id: "tasks", label: "Tasks", icon: ListTodo },
   { id: "memory", label: "Memory", icon: Brain },
+  { id: "evolution", label: "Evolution", icon: Sprout },
   { id: "connections", label: "Connections", icon: Cable },
   { id: "settings", label: "Settings", icon: Settings },
 ] satisfies Array<{ id: AppView; label: string; icon: typeof MessageSquareText }>;
@@ -88,4 +90,3 @@ export function AppShell({
     </div>
   );
 }
-
