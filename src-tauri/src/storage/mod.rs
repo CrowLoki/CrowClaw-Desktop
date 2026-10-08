@@ -1,4 +1,5 @@
 mod actions;
+pub mod composer;
 mod conversations;
 mod crowquant;
 mod error;
@@ -21,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
+pub use composer::ConversationComposer;
 pub use error::{StorageError, StorageResult};
 pub use migrations::CURRENT_SCHEMA_VERSION;
 pub use models::*;
