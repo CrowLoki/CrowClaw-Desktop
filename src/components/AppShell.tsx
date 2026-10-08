@@ -80,9 +80,10 @@ export function AppShell({
         <header className="application-titlebar">
           <span className="application-titlebar__title">CrowClaw</span>
           <span className="model-chip" title={`${connection.baseUrl} · ${connection.model}`}>
-            <span className="model-chip__status" />
+            <span className={`model-chip__status ${connection.status !== "connected" ? "model-chip__status--disconnected" : ""}`} />
             {connection.label}
             <small>{connection.model}</small>
+            {connection.status !== "connected" && <small>Disconnected</small>}
           </span>
         </header>
         {children}

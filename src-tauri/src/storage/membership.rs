@@ -103,6 +103,31 @@ impl Storage {
         expected_version: u32,
         record: &ProtectedMembershipRecord,
     ) -> StorageResult<MembershipAccount> {
+        self.membership_update_credentials(id, expected_version, record, None)
+    }
+
+    /// Reconnection publishes its edited label and verified credentials together.
+    /// Rotation uses the same transaction without changing the saved label.
+    pub(crate) fn membership_reconnect(
+        &self,
+        id: &str,
+        expected_version: u32,
+        label: &str,
+        record: &ProtectedMembershipRecord,
+    ) -> StorageResult<MembershipAccount> {
+        self.membership_update_credentials(id, expected_version, record, Some(label.trim()))
+    }
+
+    fn membership_update_credentials(
+        &self,
+        id: &str,
+        expected_version: u32,
+        record: &ProtectedMembershipRecord,
+        label: Option<&str>,
+    ) -> StorageResult<MembershipAccount> {
+        if let Some(label) = label {
+            bounded(label, 160)?;
+        }
         validate_record(record)?;
         let next = next_version(expected_version)?;
         let mut connection = self.connection()?;
@@ -114,8 +139,20 @@ impl Storage {
                 "Credentials belong to another registration".into(),
             ));
         }
-        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=?1,credential_version=?2,email=?3,updated_at_ms=?4 WHERE id=?5 AND credential_version=?6",
-            params![record.ciphertext,next,record.identity.email,now_ms()?,id,expected_version])?;
+        if let Some(label) = label {
+            let duplicate: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM membership_accounts WHERE provider=?1 AND label=?2 AND id<>?3)",
+                params![record.identity.provider, label, id],
+                |row| row.get(0),
+            )?;
+            if duplicate {
+                return Err(StorageError::Conflict(
+                    "Choose a distinct label for this account".into(),
+                ));
+            }
+        }
+        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=?1,credential_version=?2,email=?3,updated_at_ms=?4,label=COALESCE(?7,label) WHERE id=?5 AND credential_version=?6",
+            params![record.ciphertext,next,record.identity.email,now_ms()?,id,expected_version,label])?;
         require_changed(changed)?;
         let account = account_from(&tx, id)?;
         tx.commit()?;

@@ -8,12 +8,41 @@ export type ModelEndpointDraft = {
   apiKey?: string;
 };
 
-export type ModelConnection = Omit<ModelEndpointDraft, "apiKey"> & {
+export type ModelConnection = Omit<ModelEndpointDraft, "apiKey" | "provider"> & {
+  provider: ProviderKind | "chatgpt";
   id: string;
   status: "connected" | "disconnected" | "error";
   connectedAt: string | null;
   latencyMs: number | null;
 };
+
+export type MembershipAccount = {
+  id: string;
+  label: string;
+  identity: {
+    provider: string;
+    issuer: string;
+    subject: string;
+    clientId: string;
+    hostId: string;
+    email: string | null;
+  };
+  hasCredentials: boolean;
+  credentialVersion: number;
+  catalog: {
+    accountId: string;
+    models: Array<{ slug: string; displayName: string; reasoningEfforts: string[] }>;
+    fetchedAtMs: number;
+  } | null;
+  selection: { accountId: string; model: string; reasoningEffort: string | null } | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type MembershipSnapshot = { accounts: MembershipAccount[]; welcomeAcknowledged: boolean };
+export type MembershipSignInRequest = { requestId: string; label: string; accountId: string | null };
+export type MembershipModelRequest = { accountId: string; model: string; reasoningEffort: string | null };
+export type MembershipSignOutResult = { account: MembershipAccount; remoteRevoked: boolean; detail: string };
 
 export type DiscoveredEndpoint = ModelEndpointDraft & {
   id: string;
@@ -196,6 +225,14 @@ export type EvolutionSnapshot = { active: EvolutionRevision; observations: Evolu
 export type EvolutionDraftRequest = { title: string; rationale: string; instructions: string; sourceTaskIds: string[]; baseRevision: number };
 
 export interface CrowClawGateway {
+  membershipSnapshot(): Promise<MembershipSnapshot>;
+  signInMembership(request: MembershipSignInRequest): Promise<MembershipAccount>;
+  cancelMembershipSignIn(requestId: string): Promise<boolean>;
+  signOutMembership(accountId: string): Promise<MembershipSignOutResult>;
+  refreshMembershipModels(accountId: string): Promise<MembershipAccount>;
+  useMembershipModel(request: MembershipModelRequest): Promise<ModelConnection>;
+  acknowledgeMembershipWelcome(): Promise<void>;
+  manageMembershipUsage(): Promise<void>;
   evolutionSnapshot(): Promise<EvolutionSnapshot>;
   saveEvolutionFeedback(request: { taskId: string; rating: EvolutionRating; note: string }): Promise<void>;
   draftEvolution(request: EvolutionDraftRequest): Promise<EvolutionProposal>;

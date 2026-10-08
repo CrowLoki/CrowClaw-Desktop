@@ -17,11 +17,14 @@ use app::{
     crowclaw_evolution_decide, crowclaw_evolution_draft, crowclaw_evolution_evaluate,
     crowclaw_evolution_feedback, crowclaw_evolution_rate, crowclaw_evolution_reflect,
     crowclaw_evolution_restore, crowclaw_evolution_snapshot, crowclaw_folder_select,
-    crowclaw_memory_admit_file, crowclaw_memory_configure, crowclaw_memory_export,
-    crowclaw_memory_rebuild, crowclaw_memory_search, crowclaw_memory_semantic_sync,
-    crowclaw_memory_status, crowclaw_memory_sync, crowclaw_memory_withdraw, crowclaw_model_connect,
-    crowclaw_model_discover, crowclaw_model_test_connection, crowclaw_settings_save,
-    crowclaw_task_cancel, AppState,
+    crowclaw_membership_acknowledge_welcome, crowclaw_membership_cancel_sign_in,
+    crowclaw_membership_manage_usage, crowclaw_membership_refresh_models,
+    crowclaw_membership_sign_in, crowclaw_membership_sign_out, crowclaw_membership_snapshot,
+    crowclaw_membership_use_model, crowclaw_memory_admit_file, crowclaw_memory_configure,
+    crowclaw_memory_export, crowclaw_memory_rebuild, crowclaw_memory_search,
+    crowclaw_memory_semantic_sync, crowclaw_memory_status, crowclaw_memory_sync,
+    crowclaw_memory_withdraw, crowclaw_model_connect, crowclaw_model_discover,
+    crowclaw_model_test_connection, crowclaw_settings_save, crowclaw_task_cancel, AppState,
 };
 use tauri::Manager;
 
@@ -58,6 +61,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crowclaw_membership_snapshot,
+            crowclaw_membership_sign_in,
+            crowclaw_membership_cancel_sign_in,
+            crowclaw_membership_sign_out,
+            crowclaw_membership_refresh_models,
+            crowclaw_membership_use_model,
+            crowclaw_membership_acknowledge_welcome,
+            crowclaw_membership_manage_usage,
             crowclaw_app_bootstrap,
             crowclaw_model_discover,
             crowclaw_model_test_connection,

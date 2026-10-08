@@ -66,6 +66,10 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+async function nativeMembershipOnly(): Promise<never> {
+  throw new Error("ChatGPT sign-in and account operations require the installed native CrowClaw application. They are unsupported in the development preview.");
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -236,6 +240,14 @@ export function createDevelopmentGateway(
 
   return {
     async evolutionSnapshot() { await pause(); return clone({ ...evolution, proposals: evolution.proposals.slice(0, 100), revisions: evolution.revisions.slice(0, 100), evaluations: evolution.evaluations.slice(0, 100) }); },
+    async membershipSnapshot() { return { accounts: [], welcomeAcknowledged: false }; },
+    signInMembership: nativeMembershipOnly,
+    cancelMembershipSignIn: nativeMembershipOnly,
+    signOutMembership: nativeMembershipOnly,
+    refreshMembershipModels: nativeMembershipOnly,
+    useMembershipModel: nativeMembershipOnly,
+    acknowledgeMembershipWelcome: nativeMembershipOnly,
+    manageMembershipUsage: nativeMembershipOnly,
     async saveEvolutionFeedback(request) {
       await pause();
       const observation = evolution.observations.find((item) => item.taskId === request.taskId);

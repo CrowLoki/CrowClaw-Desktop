@@ -108,6 +108,78 @@ fn host_id_survives_restart_and_concurrent_creation_but_not_an_independent_insta
 }
 
 #[test]
+fn reconnect_saves_label_atomically_with_credentials_and_retains_choices() {
+    let directory = TempDir::new().unwrap();
+    let storage = Storage::open(directory.path()).unwrap();
+    let account = add(&storage, "first-client", "Personal");
+    let other = add(&storage, "second-client", "Work");
+    storage
+        .membership_save_catalog(
+            &account.id,
+            account.credential_version,
+            &catalog(&account, "chosen-model", &["high"]),
+        )
+        .unwrap();
+    storage
+        .membership_select(
+            &account.id,
+            account.credential_version,
+            &selection(&account, "chosen-model", Some("high")),
+        )
+        .unwrap();
+    let replacement = protected(&account.identity, "RECONNECTED");
+    assert!(storage
+        .membership_reconnect(
+            &account.id,
+            account.credential_version,
+            &other.label,
+            &replacement
+        )
+        .is_err());
+    let (unchanged, version) = storage
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    assert_eq!(version, account.credential_version);
+    assert_eq!(
+        open_credentials(&unchanged).unwrap().access_token,
+        "SYNTHETIC-ACCESS-first-client"
+    );
+    let renamed = storage
+        .membership_reconnect(
+            &account.id,
+            account.credential_version,
+            "  Personal laptop  ",
+            &replacement,
+        )
+        .unwrap();
+    assert_eq!(renamed.label, "Personal laptop");
+    assert_eq!(renamed.identity, account.identity);
+    assert_eq!(renamed.selection.unwrap().model, "chosen-model");
+    assert!(storage
+        .membership_reconnect(
+            &account.id,
+            account.credential_version,
+            "Late rename",
+            &replacement
+        )
+        .is_err());
+    drop(storage);
+    let storage = Storage::open(directory.path()).unwrap();
+    assert_eq!(
+        storage.membership_account(&account.id).unwrap().label,
+        "Personal laptop"
+    );
+    let (record, _) = storage
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    assert_eq!(
+        open_credentials(&record).unwrap().access_token,
+        "SYNTHETIC-ACCESS-RECONNECTED"
+    );
+    assert_eq!(storage.membership_account(&other.id).unwrap().label, "Work");
+}
+
+#[test]
 fn windows_protection_roundtrips_redacts_and_binds_immutable_registration_not_email() {
     let directory = TempDir::new().unwrap();
     let storage = Storage::open(directory.path()).unwrap();

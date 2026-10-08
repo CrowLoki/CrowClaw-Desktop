@@ -1,4 +1,7 @@
 mod protection;
+pub(crate) mod protocol;
+pub(crate) mod responses;
+pub(crate) mod service;
 use crate::storage::membership_types::validate_identity;
 pub use crate::storage::membership_types::*;
 use serde::{Deserialize, Serialize};

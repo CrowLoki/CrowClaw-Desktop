@@ -13,6 +13,8 @@ import { MemoryView } from "./components/MemoryView";
 import { Onboarding } from "./components/Onboarding";
 import { SettingsView } from "./components/SettingsView";
 import { TaskCenter } from "./components/TaskCenter";
+import { MembershipAccounts, MembershipUsage, MembershipWelcome } from "./components/MembershipAccounts";
+import { useMembershipAccounts } from "./components/useMembershipAccounts";
 import type {
   ActionDecision,
   AgentTask,
@@ -78,6 +80,14 @@ export function App({ gateway = defaultGateway }: AppProps) {
   const [cancellingTaskId, setCancellingTaskId] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<ActionDecision | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredEndpoint[]>([]);
+  const membership = useMembershipAccounts(gateway,
+    (connection) => {
+      setBootstrap((current) => current ? { ...current, firstRun: false, connection } : current);
+      if (bootstrap?.firstRun && bootstrap.selectedConversationId) void loadConversation(bootstrap.selectedConversationId);
+    },
+    (accountId) => setBootstrap((current) => current?.connection?.provider === "chatgpt" && current.connection.id === `membership:${accountId}`
+      ? { ...current, connection: { ...current.connection, status: "disconnected", connectedAt: null, latencyMs: null } } : current),
+  );
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
@@ -286,11 +296,13 @@ export function App({ gateway = defaultGateway }: AppProps) {
   if (!bootstrap) return <ErrorScreen message="CrowClaw returned no workspace state." onRetry={() => void loadApp()} />;
   if (bootstrap.firstRun || !bootstrap.connection) {
     return (
-      <Onboarding
+      <><Onboarding
         discoverEndpoints={discoverEndpoints}
         testConnection={(draft) => gateway.testConnection(draft)}
         connect={connectModel}
+        membership={<MembershipAccounts membership={membership} connection={bootstrap.connection} />}
       />
+      <MembershipWelcome membership={membership} /></>
     );
   }
 
@@ -305,7 +317,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
   ) : undefined;
 
   return (
-    <AppShell
+    <><AppShell
       view={view}
       connection={bootstrap.connection}
       tasks={bootstrap.tasks}
@@ -321,6 +333,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
           loading={conversationLoading}
           sending={sending}
           error={operationError}
+          membershipUsage={<MembershipUsage membership={membership} />}
           onSelectFolder={() => gateway.selectFolder()}
           onSend={sendMessage}
         />
@@ -346,10 +359,11 @@ export function App({ gateway = defaultGateway }: AppProps) {
         />
       )}
       {view === "evolution" && <EvolutionView gateway={gateway} connection={bootstrap.connection} developmentPreview={!isTauriRuntime() && import.meta.env.DEV} />}
-      {view === "settings" && <SettingsView settings={bootstrap.settings} onSave={saveSettings} />}
+      {view === "settings" && <SettingsView settings={bootstrap.settings} onSave={saveSettings} membership={<MembershipAccounts membership={membership} connection={bootstrap.connection} />} />}
       {bootstrap.pendingActions[0] && (
         <ApprovalDialog action={bootstrap.pendingActions[0]} deciding={deciding} onDecision={(decision) => void decideAction(decision)} />
       )}
     </AppShell>
+    <MembershipWelcome membership={membership} /></>
   );
 }

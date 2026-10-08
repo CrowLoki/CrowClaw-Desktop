@@ -1,5 +1,5 @@
 import { Check, LoaderCircle, LockKeyhole, MonitorCog, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import crowClawHero from "../assets/branding/crowclaw-hero.webp";
 import type {
   ConnectionTestResult,
@@ -13,6 +13,7 @@ type OnboardingProps = {
   discoverEndpoints: () => Promise<DiscoveredEndpoint[]>;
   testConnection: (draft: ModelEndpointDraft) => Promise<ConnectionTestResult>;
   connect: (draft: ModelEndpointDraft) => Promise<void>;
+  membership?: ReactNode;
 };
 
 const initialDraft: ModelEndpointDraft = {
@@ -22,7 +23,7 @@ const initialDraft: ModelEndpointDraft = {
   model: "local-model",
 };
 
-export function Onboarding({ discoverEndpoints, testConnection, connect }: OnboardingProps) {
+export function Onboarding({ discoverEndpoints, testConnection, connect, membership }: OnboardingProps) {
   const [discovered, setDiscovered] = useState<DiscoveredEndpoint[]>([]);
   const [discovering, setDiscovering] = useState(true);
 
@@ -84,6 +85,7 @@ export function Onboarding({ discoverEndpoints, testConnection, connect }: Onboa
           onSubmit={connect}
         />
         <p className="onboarding-footnote">CrowClaw connects only to the endpoint shown above. You can review permissions in Settings.</p>
+        {membership}
       </section>
     </main>
   );

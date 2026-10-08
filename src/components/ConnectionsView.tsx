@@ -15,7 +15,9 @@ type ConnectionsViewProps = {
 };
 
 export function ConnectionsView({ connection, discovered, onTest, onConnect }: ConnectionsViewProps) {
-  const initialDraft: ModelEndpointDraft = {
+  const initialDraft: ModelEndpointDraft = connection.provider === "chatgpt" ? {
+    provider: "lm-studio", label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", model: "local-model",
+  } : {
     provider: connection.provider,
     label: connection.label,
     baseUrl: connection.baseUrl,
@@ -30,7 +32,7 @@ export function ConnectionsView({ connection, discovered, onTest, onConnect }: C
           <h1>Connections</h1>
           <p>Choose which local OpenAI-compatible model CrowClaw uses.</p>
         </div>
-        <span className="section-stat section-stat--success"><CheckCircle2 size={18} /> Connected</span>
+        <span className={`section-stat ${connection.status === "connected" ? "section-stat--success" : ""}`}><CheckCircle2 size={18} /> {connection.status === "connected" ? "Connected" : "Disconnected"}</span>
       </header>
 
       <section className="connection-overview" aria-labelledby="active-connection-title">
@@ -38,12 +40,12 @@ export function ConnectionsView({ connection, discovered, onTest, onConnect }: C
         <div className="connection-overview__identity">
           <span>Active connection</span>
           <h2 id="active-connection-title">{connection.label}</h2>
-          <code>{connection.baseUrl}</code>
+          {connection.provider === "chatgpt" ? <span>ChatGPT account · Manage in Settings</span> : <code>{connection.baseUrl}</code>}
         </div>
         <dl>
           <div><dt>Model</dt><dd>{connection.model}</dd></div>
           <div><dt>Latency</dt><dd><Gauge size={14} /> {connection.latencyMs ?? "—"} ms</dd></div>
-          <div><dt>Privacy</dt><dd><LockKeyhole size={14} /> Local endpoint</dd></div>
+          <div><dt>Provider</dt><dd><LockKeyhole size={14} /> {connection.provider === "chatgpt" ? "ChatGPT" : "Local / custom endpoint"}</dd></div>
         </dl>
       </section>
 
@@ -62,4 +64,3 @@ export function ConnectionsView({ connection, discovered, onTest, onConnect }: C
     </main>
   );
 }
-

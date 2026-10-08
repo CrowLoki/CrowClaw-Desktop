@@ -18,9 +18,18 @@ import type {
   TaskCancellationResult,
   NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport, SemanticIndexReport,
   EvolutionSnapshot, EvolutionProposal, EvolutionEvaluation, EvolutionRevision,
+  MembershipAccount, MembershipSnapshot, MembershipSignOutResult,
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
+  membershipSnapshot: "crowclaw_membership_snapshot",
+  signInMembership: "crowclaw_membership_sign_in",
+  cancelMembershipSignIn: "crowclaw_membership_cancel_sign_in",
+  signOutMembership: "crowclaw_membership_sign_out",
+  refreshMembershipModels: "crowclaw_membership_refresh_models",
+  useMembershipModel: "crowclaw_membership_use_model",
+  acknowledgeMembershipWelcome: "crowclaw_membership_acknowledge_welcome",
+  manageMembershipUsage: "crowclaw_membership_manage_usage",
   evolutionSnapshot: "crowclaw_evolution_snapshot",
   saveEvolutionFeedback: "crowclaw_evolution_feedback",
   draftEvolution: "crowclaw_evolution_draft",
@@ -70,6 +79,14 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
 
 export function createTauriGateway(): CrowClawGateway {
   return {
+    membershipSnapshot: () => invokeNative<MembershipSnapshot>(TAURI_COMMANDS.membershipSnapshot),
+    signInMembership: (request) => invokeNative<MembershipAccount>(TAURI_COMMANDS.signInMembership, { request }),
+    cancelMembershipSignIn: (requestId) => invokeNative<boolean>(TAURI_COMMANDS.cancelMembershipSignIn, { requestId }),
+    signOutMembership: (accountId) => invokeNative<MembershipSignOutResult>(TAURI_COMMANDS.signOutMembership, { accountId }),
+    refreshMembershipModels: (accountId) => invokeNative<MembershipAccount>(TAURI_COMMANDS.refreshMembershipModels, { accountId }),
+    useMembershipModel: (request) => invokeNative<ModelConnection>(TAURI_COMMANDS.useMembershipModel, { request }),
+    acknowledgeMembershipWelcome: () => invokeNative<void>(TAURI_COMMANDS.acknowledgeMembershipWelcome),
+    manageMembershipUsage: () => invokeNative<void>(TAURI_COMMANDS.manageMembershipUsage),
     evolutionSnapshot: () => invokeNative<EvolutionSnapshot>(TAURI_COMMANDS.evolutionSnapshot),
     saveEvolutionFeedback: (request) => invokeNative<void>(TAURI_COMMANDS.saveEvolutionFeedback, { request }),
     draftEvolution: (request) => invokeNative<EvolutionProposal>(TAURI_COMMANDS.draftEvolution, { request }),

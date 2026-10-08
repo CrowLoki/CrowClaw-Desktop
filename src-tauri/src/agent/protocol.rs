@@ -30,6 +30,27 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_context: Option<ProviderTurnContext>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTurnContext {
+    pub provider: String,
+    pub account_id: String,
+    pub model: String,
+    pub items: Vec<Value>,
+}
+impl std::fmt::Debug for ProviderTurnContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderTurnContext")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("items", &"[provider context]")
+            .finish()
+    }
 }
 
 impl ChatMessage {
@@ -56,6 +77,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
+            provider_context: None,
         }
     }
 
@@ -66,6 +88,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+            provider_context: None,
         }
     }
 
@@ -79,6 +102,7 @@ impl ChatMessage {
             tool_calls,
             tool_call_id: None,
             name: None,
+            provider_context: None,
         }
     }
 }
