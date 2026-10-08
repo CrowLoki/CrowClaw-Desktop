@@ -247,6 +247,7 @@ struct ResponseStream {
     consumed: usize,
     terminal: bool,
     completed_items: BTreeMap<usize, Value>,
+    pending_items: HashSet<usize>,
 }
 impl ResponseStream {
     fn new(selection: MembershipSelection) -> Self {
@@ -257,6 +258,7 @@ impl ResponseStream {
             consumed: 0,
             terminal: false,
             completed_items: BTreeMap::new(),
+            pending_items: HashSet::new(),
         }
     }
     fn push(&mut self, bytes: &[u8]) -> Result<Option<ChatCompletion>, ProviderError> {
@@ -303,19 +305,27 @@ impl ResponseStream {
         let event: Value =
             serde_json::from_str(&data).map_err(|_| invalid("Response stream event is invalid"))?;
         match event.get("type").and_then(|v| v.as_str()) {
+            Some("response.output_item.added") => {
+                let index = output_index(&event)?;
+                if !event.get("item").is_some_and(Value::is_object) {
+                    return Err(invalid("Announced output item is invalid"));
+                }
+                if self.completed_items.contains_key(&index) || !self.pending_items.insert(index) {
+                    return Err(invalid("Response repeats an announced output item"));
+                }
+                Ok(None)
+            }
             Some("response.output_item.done") => {
-                let index = event["output_index"]
-                    .as_u64()
-                    .filter(|index| *index < 1024)
-                    .ok_or_else(|| invalid("Completed output item index is invalid"))?
-                    as usize;
+                let index = output_index(&event)?;
                 let item = event
                     .get("item")
                     .filter(|item| item.is_object())
                     .ok_or_else(|| invalid("Completed output item is invalid"))?;
+                validate_completed_item(item)?;
                 if self.completed_items.insert(index, item.clone()).is_some() {
                     return Err(invalid("Response repeats a completed output item"));
                 }
+                self.pending_items.remove(&index);
                 Ok(None)
             }
             Some("response.completed") => {
@@ -330,11 +340,12 @@ impl ResponseStream {
                     .is_some_and(Vec::is_empty)
                     && !self.completed_items.is_empty()
                 {
-                    if self
-                        .completed_items
-                        .keys()
-                        .copied()
-                        .ne(0..self.completed_items.len())
+                    if !self.pending_items.is_empty()
+                        || self
+                            .completed_items
+                            .keys()
+                            .copied()
+                            .ne(0..self.completed_items.len())
                     {
                         return Err(invalid("Response is missing completed output items"));
                     }
@@ -376,6 +387,25 @@ impl ResponseStream {
     }
 }
 
+fn output_index(event: &Value) -> Result<usize, ProviderError> {
+    event["output_index"]
+        .as_u64()
+        .filter(|index| *index < 1024)
+        .map(|index| index as usize)
+        .ok_or_else(|| invalid("Response output item index is invalid"))
+}
+
+fn validate_completed_item(item: &Value) -> Result<(), ProviderError> {
+    if item
+        .get("status")
+        .filter(|status| !status.is_null())
+        .is_some_and(|status| status != "completed")
+    {
+        return Err(invalid("Response contains an unfinished output item"));
+    }
+    Ok(())
+}
+
 fn completed_response(
     response: &Value,
     selection: &MembershipSelection,
@@ -393,6 +423,7 @@ fn completed_response(
     let mut calls = Vec::new();
     let mut call_ids = HashSet::new();
     for item in items {
+        validate_completed_item(item)?;
         match item.get("type").and_then(|v| v.as_str()) {
             Some("message") => {
                 if item["role"] != "assistant" {

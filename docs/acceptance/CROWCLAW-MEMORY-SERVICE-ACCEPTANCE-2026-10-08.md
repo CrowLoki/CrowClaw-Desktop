@@ -611,3 +611,28 @@ callback/token exchange succeeded; that browser rendering issue is unresolved.
 Sol was available but unnecessary for these bounded tests and was not invoked.
 No private account identity, credential, host identifier or machine path is
 included in this receipt. No Alpha 4 release is claimed.
+
+### Stream review and reconnect follow-up
+
+Independent review found two compact-stream edge cases: an explicitly incomplete
+item could be promoted into output, and an announced trailing item could remain
+unfinished while a completed prefix was accepted. Both new regressions failed
+before correction. The decoder now rejects explicit non-completed item statuses
+in both item events and populated terminal output, and requires every announced
+item to finish before compact reconstruction. The reviewer rechecked both fixes
+and reported no remaining finding in that bounded review. All 12 response tests
+pass, including the two regressions and positive announced-item completion.
+The complete membership-focused suite passes 52 tests; native build, formatting
+and diff checks pass.
+
+Real saved-account reconnect succeeded without changing the registration's model
+or low effort, and another request succeeded with the renewed connection. The
+corrected native build then reopened that profile and passed another Luna/low
+request plus another approval-gated memory search/follow-up. The native read-only
+audit confirms both observed searches returned two results and each followed
+proposed/approved/succeeded with a succeeded task.
+
+Corrected executable SHA-256:
+`977F0C4A37E8EDFFC4C27362E5DD81B7406C3C2EEA29103A8F21C81749FB311C`.
+The previous exact-installer and remaining lifecycle/browser boundaries still
+apply; successful reconnect supersedes only its earlier unverified status.
