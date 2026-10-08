@@ -685,6 +685,15 @@ Actual native checks established:
   A further normal restart retained the reply and selection; no test draft,
   approval dialog or running task remained.
 
+The first hosted composer run, `37812986175`, failed one frontend fixture before
+installation. Its annotation showed startup awaiting a deliberately pending chat:
+the fixture assumed the original chat was newest, which depended on timestamp
+ties. Controlled equal/separated timestamps reproduced the latter failure. The
+fixture now explicitly selects its intended initial chat; both cases exercise
+the original pending-load/obsolete-failure assertions. All 107 frontend tests pass
+with default CI worker settings, and the production build passes. No product code,
+timeout or assertion was weakened. Exact-head hosted acceptance must rerun.
+
 These composer results are native-executable acceptance, not yet exact-installed
 artifact acceptance of this newer slice. The unresolved browser return-page
 rendering, broader packaged semantic/withdrawal/export/network-isolation journeys,

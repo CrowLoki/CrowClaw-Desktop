@@ -28,13 +28,25 @@ async function withOllama() {
 }
 
 describe("App conversation composer integration", () => {
-  it("blocks the old composer during another chat load and ignores a superseded load failure", async () => {
+  it.each([0, 1000])("blocks the old composer during another chat load and ignores a superseded load failure (timestamp gap %i)", async (timestampGap) => {
+    const initialTime = Date.parse('2026-10-09T00:00:00Z');
+    const firstTimestamp = new Date(initialTime).toISOString();
+    const secondTimestamp = new Date(initialTime + timestampGap).toISOString();
+    const timestamp = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue(firstTimestamp);
     const gateway=createDevelopmentGateway({firstRun:false,delayMs:0});
+    const initialConversationId = (await gateway.bootstrap()).selectedConversationId!;
+    timestamp.mockReturnValue(secondTimestamp);
     await gateway.createConversation();
+    timestamp.mockRestore();
+    const originalBootstrap = gateway.bootstrap.bind(gateway);
+    // This scenario starts in the original chat, independent of recency sorting.
+    vi.spyOn(gateway, 'bootstrap').mockImplementation(async () => ({
+      ...await originalBootstrap(), selectedConversationId: initialConversationId,
+    }));
     const originalGet=gateway.getConversation.bind(gateway);
     let rejectLoad!:(reason:Error)=>void;
     const pending=new Promise<Awaited<ReturnType<typeof gateway.getConversation>>>((_,reject)=>{rejectLoad=reject;});
-    vi.spyOn(gateway,'getConversation').mockImplementation(id=>id==='conversation-welcome'?originalGet(id):pending);
+    vi.spyOn(gateway,'getConversation').mockImplementation(id=>id===initialConversationId?originalGet(id):pending);
     const send=vi.spyOn(gateway,'sendMessage');
     render(<App gateway={gateway}/>);
     fireEvent.change(await ready(),{target:{value:'Keep this in the original chat'}});
