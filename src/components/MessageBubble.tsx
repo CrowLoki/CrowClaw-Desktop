@@ -34,6 +34,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         <div className="message__meta">
           <strong>{assistant ? "CrowClaw" : "You"}</strong>
           <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
+          {assistant && message.requestedModel && <small title={`Requested: ${message.requestedModel}; reported: ${message.reportedModel ?? 'not supplied'}`}>
+            {message.reportedModel ?? message.requestedModel}{message.reasoningEffort ? ` · ${message.reasoningEffort}` : ''}
+            {!message.reportedModel && ' · requested'}
+          </small>}
           {message.status === "streaming" && <LoaderCircle className="spin" size={14} aria-label="Responding" />}
           {message.status === "waiting-approval" && (
             <span className="approval-waiting"><ShieldQuestion size={13} /> Approval needed</span>

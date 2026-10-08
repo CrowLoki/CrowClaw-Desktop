@@ -25,6 +25,12 @@ type ChatWorkspaceProps = {
   sending: boolean;
   error: string | null;
   membershipUsage?: ReactNode;
+  modelControls?: ReactNode;
+  draft: string;
+  onDraftChange: (draft: string) => void;
+  selectedFolder: SelectedFolder | null;
+  onSelectedFolderChange: (folder: SelectedFolder | null) => void;
+  composerLoading?: boolean;
   onSelectFolder: () => Promise<SelectedFolder | null>;
   onSend: (content: string, selectedFolder: SelectedFolder | null) => Promise<void>;
 };
@@ -43,22 +49,26 @@ export function ChatWorkspace({
   sending,
   error,
   membershipUsage,
+  modelControls,
+  draft,
+  onDraftChange,
+  selectedFolder,
+  onSelectedFolderChange,
+  composerLoading = false,
   onSelectFolder,
   onSend,
 }: ChatWorkspaceProps) {
-  const [draft, setDraft] = useState("");
-  const [selectedFolder, setSelectedFolder] = useState<SelectedFolder | null>(null);
   const [selectingFolder, setSelectingFolder] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
-  }, [conversation?.messages.length]);
+  }, [conversation?.id, conversation?.messages.length]);
 
   async function chooseFolder() {
     setSelectingFolder(true);
     try {
-      setSelectedFolder(await onSelectFolder());
+      onSelectedFolderChange(await onSelectFolder());
     } finally {
       setSelectingFolder(false);
     }
@@ -66,15 +76,18 @@ export function ChatWorkspace({
 
   async function submit() {
     const content = draft.trim();
-    if ((!content && !selectedFolder) || sending || !conversation || connection.status !== "connected") return;
-    setDraft("");
+    if ((!content && !selectedFolder) || sending || composerLoading || loading || !conversation || connection.status !== "connected") return;
     const folder = selectedFolder;
-    setSelectedFolder(null);
-    await onSend(content || `Inspect the selected folder “${folder?.name}”.`, folder);
+    try {
+      await onSend(content || `Inspect the selected folder “${folder?.name}”.`, folder);
+      onSelectedFolderChange(null);
+    } catch {
+      // The parent exposes the failure. Keep the draft and chosen folder intact.
+    }
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void submit();
     }
@@ -118,7 +131,7 @@ export function ChatWorkspace({
             <p>CrowClaw can talk things through, complete tasks, and request local actions with your approval.</p>
             <div className="starter-prompts">
               {starterPrompts.map((prompt) => (
-                <button type="button" key={prompt} onClick={() => setDraft(prompt)}>{prompt}</button>
+                <button type="button" key={prompt} onClick={() => onDraftChange(prompt)}>{prompt}</button>
               ))}
             </div>
           </section>
@@ -133,6 +146,7 @@ export function ChatWorkspace({
       </div>
 
       <div className="composer-zone">
+        {modelControls}
         {connection.provider === "chatgpt" && connection.status === "connected" && <div className="membership-plan"><span>Using ChatGPT plan</span>{membershipUsage}</div>}
         {connection.status !== "connected" && <p role="status">Disconnected. Choose a connection in Settings or Connections to continue.</p>}
         {error && <div className="inline-error" role="alert">{error}</div>}
@@ -141,25 +155,26 @@ export function ChatWorkspace({
             <div className="attachment-chip">
               <FolderPlus size={15} />
               <span><strong>{selectedFolder.name}</strong><small>{selectedFolder.displayPath}</small></span>
-              <button type="button" onClick={() => setSelectedFolder(null)} aria-label="Remove selected folder"><X size={14} /></button>
+              <button type="button" onClick={() => onSelectedFolderChange(null)} aria-label="Remove selected folder"><X size={14} /></button>
             </div>
           )}
           <textarea
             value={draft}
-            onChange={(event) => setDraft(event.currentTarget.value)}
+            onChange={(event) => onDraftChange(event.currentTarget.value)}
             onKeyDown={handleKeyDown}
             placeholder={`Message CrowClaw · ${connection.model}`}
             rows={1}
-            disabled={!conversation || sending || connection.status !== "connected"}
+            disabled={!conversation || composerLoading}
+            readOnly={sending}
             aria-label="Message CrowClaw"
           />
           <div className="composer__toolbar">
-            <button className="composer-tool" type="button" onClick={() => void chooseFolder()} disabled={selectingFolder || sending}>
+            <button className="composer-tool" type="button" onClick={() => void chooseFolder()} disabled={selectingFolder || sending || composerLoading || loading || !conversation}>
               {selectingFolder ? <LoaderCircle className="spin" size={17} /> : <Paperclip size={17} />}
               Choose folder
             </button>
             <span className="composer-hint"><ShieldCheck size={14} /> Local actions require permission</span>
-            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder) || sending || !conversation || connection.status !== "connected"} aria-label="Send message">
+            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder) || sending || !conversation || composerLoading || connection.status !== "connected"} aria-label="Send message">
               {sending ? <LoaderCircle className="spin" size={18} /> : <ArrowUp size={19} />}
             </button>
           </div>

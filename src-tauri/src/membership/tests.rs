@@ -494,6 +494,40 @@ fn token_rotation_preserves_the_same_accounts_model_choice_until_catalog_refresh
 }
 
 #[test]
+fn conversation_choice_validation_does_not_mutate_the_account_default() {
+    let directory = TempDir::new().unwrap();
+    let storage = Storage::open(directory.path()).unwrap();
+    let account = add(&storage, "composer-client", "Composer account");
+    storage
+        .membership_save_catalog(
+            &account.id,
+            1,
+            &catalog(&account, "offered-model", &["low", "high"]),
+        )
+        .unwrap();
+    storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("low")))
+        .unwrap();
+    assert!(storage
+        .membership_account(&account.id)
+        .unwrap()
+        .selection
+        .is_none());
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("ultra")))
+        .is_err());
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "different-model", Some("low")))
+        .is_err());
+    storage
+        .membership_clear_credentials(&account.id, 1)
+        .unwrap();
+    assert!(storage
+        .membership_validate_selection(&selection(&account, "offered-model", Some("low")))
+        .is_err());
+}
+
+#[test]
 fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
     let directory = TempDir::new().unwrap();
     let storage = Storage::open(directory.path()).unwrap();
@@ -505,7 +539,7 @@ fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
+            "DROP TABLE conversation_composers; DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
         )
         .unwrap();
     drop(connection);
@@ -554,7 +588,7 @@ fn schema_seven_upgrade_preserves_registration_and_protected_credentials() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
+            "DROP TABLE conversation_composers; ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
         )
         .unwrap();
     drop(connection);
@@ -563,7 +597,10 @@ fn schema_seven_upgrade_preserves_registration_and_protected_credentials() {
     let (record, after_version) = upgraded
         .membership_protected_credentials(&account.id)
         .unwrap();
-    assert_eq!(upgraded.schema_version().unwrap(), 8);
+    assert_eq!(
+        upgraded.schema_version().unwrap(),
+        crate::storage::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(after.label, account.label);
     assert_eq!(after.identity, account.identity);
     assert_eq!(after.session_version, 1);

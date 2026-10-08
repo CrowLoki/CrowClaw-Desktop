@@ -9,6 +9,24 @@ const invokeMock = vi.mocked(invoke);
 describe("Tauri command contract", () => {
   beforeEach(() => invokeMock.mockReset());
 
+  it("binds composer reads/writes and submission revisions to their conversation", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const gateway=createTauriGateway();
+    const selection={providerProfileId:'membership:account-a',model:'returned-model',reasoningEffort:'low'};
+    await gateway.getComposer('chat-a');
+    await gateway.saveComposerDraft('chat-a',3,'unsent');
+    await gateway.chooseComposerModel('chat-a',4,selection);
+    await gateway.refreshComposerModels(selection.providerProfileId);
+    await gateway.sendMessage('chat-a','unsent',null,5);
+    expect(invokeMock.mock.calls).toEqual([
+      ['crowclaw_composer_get',{request:{conversationId:'chat-a'}}],
+      ['crowclaw_composer_save_draft',{request:{conversationId:'chat-a',revision:3,draft:'unsent'}}],
+      ['crowclaw_composer_choose',{request:{conversationId:'chat-a',revision:4,selection}}],
+      ['crowclaw_composer_refresh_models',{request:{sourceId:'membership:account-a'}}],
+      ['crowclaw_chat_send',{request:{conversationId:'chat-a',content:'unsent',selectedFolder:null,composerRevision:5}}],
+    ]);
+  });
+
   it("uses explicit, unique CrowClaw command names", () => {
     const commands = Object.values(TAURI_COMMANDS);
     expect(new Set(commands).size).toBe(commands.length);

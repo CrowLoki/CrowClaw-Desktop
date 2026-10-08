@@ -12,35 +12,47 @@ impl Storage {
         let now = now_ms()?;
         let payload_json = value_to_json(&input.payload)?;
         let connection = self.connection()?;
-        connection.execute(
-            r#"INSERT INTO tasks (
+        insert_task_in(&connection, input, &payload_json, now)
+    }
+}
+
+/// Inserts on the caller's connection so a larger transaction can own the write.
+pub(super) fn insert_task_in(
+    connection: &Connection,
+    input: &TaskInput,
+    payload_json: &str,
+    now: i64,
+) -> StorageResult<StoredTask> {
+    connection.execute(
+        r#"INSERT INTO tasks (
                    id, conversation_id, kind, payload_json, status,
                    cancellation_requested, created_at_ms, updated_at_ms
                ) VALUES (?1, ?2, ?3, ?4, 'queued', 0, ?5, ?5)"#,
-            params![
-                input.id,
-                input.conversation_id,
-                input.kind,
-                payload_json,
-                now
-            ],
-        )?;
-        Ok(StoredTask {
-            id: input.id.clone(),
-            conversation_id: input.conversation_id.clone(),
-            kind: input.kind.clone(),
-            payload: input.payload.clone(),
-            status: TaskStatus::Queued,
-            cancellation_requested: false,
-            result: None,
-            error: None,
-            created_at_ms: now,
-            updated_at_ms: now,
-            started_at_ms: None,
-            completed_at_ms: None,
-        })
-    }
+        params![
+            input.id,
+            input.conversation_id,
+            input.kind,
+            payload_json,
+            now
+        ],
+    )?;
+    Ok(StoredTask {
+        id: input.id.clone(),
+        conversation_id: input.conversation_id.clone(),
+        kind: input.kind.clone(),
+        payload: input.payload.clone(),
+        status: TaskStatus::Queued,
+        cancellation_requested: false,
+        result: None,
+        error: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        started_at_ms: None,
+        completed_at_ms: None,
+    })
+}
 
+impl Storage {
     pub fn get_task(&self, id: &str) -> StorageResult<Option<StoredTask>> {
         require_non_empty("task id", id)?;
         let connection = self.connection()?;

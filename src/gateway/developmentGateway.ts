@@ -1,3 +1,4 @@
+import type { ConversationComposerSnapshot, ConversationComposerState, ComposerModelSource } from './composerContracts';
 import type {
   ActionDecision,
   ActionDecisionResult,
@@ -146,6 +147,29 @@ export function createDevelopmentGateway(
       };
   const welcome = defaultConversation();
   const conversations = new Map<string, Conversation>([[welcome.id, welcome]]);
+  const composerConnections = new Map<string,ModelConnection>(connection ? [[connection.id,clone(connection)]] : []);
+  const composers = new Map<string,ConversationComposerState>();
+  function composerState(id:string):ConversationComposerState {
+    requireConversation(id);
+    let saved=composers.get(id);
+    if (!saved) {
+      saved={conversationId:id,revision:1,draft:'',selection:connection?{providerProfileId:connection.id,model:connection.model,reasoningEffort:null}:null};
+      composers.set(id,saved);
+    }
+    return saved;
+  }
+  function composerSources():ComposerModelSource[] {
+    return [...composerConnections.values()].map(profile=>({id:profile.id,label:profile.label,provider:profile.provider,status:profile.status==='connected'?'ready':'disconnected',models:[...new Set([profile.model,...(discoveredEndpoints.find(endpoint=>endpoint.baseUrl===profile.baseUrl)?.availableModels??[])])].map(id=>({id,displayName:id,reasoningEfforts:[]}))}));
+  }
+  function composerSnapshot(id:string):ConversationComposerSnapshot {
+    const saved=composerState(id), profile=saved.selection?composerConnections.get(saved.selection.providerProfileId):undefined;
+    return clone({composer:saved,connection:profile&&saved.selection?{...profile,model:saved.selection.model}:null,sources:composerSources(),warning:profile?null:'Choose a connection and model for this conversation'});
+  }
+  function requireComposerRevision(id:string,revision:number) {
+    const saved=composerState(id);
+    if(saved.revision!==revision)throw new Error('This conversation changed; refresh its composer.');
+    return saved;
+  }
   let tasks: AgentTask[] = options.includeRunningTask
     ? [
         {
@@ -239,6 +263,17 @@ export function createDevelopmentGateway(
   }
 
   return {
+    async getComposer(id) {return composerSnapshot(id);},
+    async saveComposerDraft(id,revision,draft) {
+      const saved=requireComposerRevision(id,revision);
+      composers.set(id,{...saved,draft,revision:revision+1});return composerSnapshot(id);
+    },
+    async chooseComposerModel(id,revision,selection) {
+      const saved=requireComposerRevision(id,revision),source=composerSources().find(source=>source.id===selection.providerProfileId);
+      if(source?.status!=='ready'||!source.models.some(model=>model.id===selection.model)||selection.reasoningEffort!==null)throw new Error('Choose an available preview model.');
+      composers.set(id,{...saved,selection:clone(selection),revision:revision+1});return composerSnapshot(id);
+    },
+    async refreshComposerModels(id) {const source=composerSources().find(source=>source.id===id);if(!source)throw new Error('Connection was not found.');return clone(source);},
     async evolutionSnapshot() { await pause(); return clone({ ...evolution, proposals: evolution.proposals.slice(0, 100), revisions: evolution.revisions.slice(0, 100), evaluations: evolution.evaluations.slice(0, 100) }); },
     async membershipSnapshot() { return { accounts: [], welcomeAcknowledged: false }; },
     signInMembership: nativeMembershipOnly,
@@ -371,6 +406,7 @@ export function createDevelopmentGateway(
         latencyMs: tested.latencyMs,
       };
       firstRun = false;
+      composerConnections.set(connection.id,clone(connection));
       return clone(connection);
     },
 
@@ -406,12 +442,18 @@ export function createDevelopmentGateway(
       conversationId: string,
       content: string,
       selectedFolder: SelectedFolder | null,
+      composerRevision?: number,
     ): Promise<ChatTurnResult> {
       await pause();
-      if (!connection || connection.status !== "connected") {
+      const savedComposer=composerState(conversationId);
+      if(composerRevision!==undefined)requireComposerRevision(conversationId,composerRevision);
+      if(composerRevision!==undefined && savedComposer.draft.trim()!==content.trim() && !(savedComposer.draft.trim()==='' && selectedFolder))throw new Error('The draft changed before submission; review the current text and send again.');
+      const chosenConnection=composerSnapshot(conversationId).connection;
+      if (!chosenConnection || chosenConnection.status !== "connected") {
         throw new Error("Connect a local model before sending a message.");
       }
       const conversation = requireConversation(conversationId);
+      composers.set(conversationId,{...savedComposer,draft:'',revision:savedComposer.revision+1});
       const timestamp = now();
       const userMessage: ConversationMessage = {
         id: createId("message", ++counter),
@@ -480,7 +522,7 @@ export function createDevelopmentGateway(
         conversation.messages.push({
           id: createId("message", ++counter),
           role: "assistant",
-          content: `I’m connected through ${connection.label} using ${connection.model}. This development preview confirms the desktop conversation flow; native model streaming is supplied by the Tauri runtime.`,
+          content: `I’m connected through ${chosenConnection.label} using ${chosenConnection.model}. This development preview confirms the desktop conversation flow; native model streaming is supplied by the Tauri runtime.`,
           createdAt: now(),
           status: "sent",
           taskId: task.id,

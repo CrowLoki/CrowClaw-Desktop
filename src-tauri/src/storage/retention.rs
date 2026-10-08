@@ -22,9 +22,11 @@ impl Storage {
             .into_iter()
             .map(|conversation| {
                 let messages = list_messages_from(&transaction, &conversation.id)?;
+                let composer = super::composer::composer_from(&transaction, &conversation.id)?;
                 Ok(ConversationExport {
                     conversation,
                     messages,
+                    composer: (composer.revision > 0).then_some(composer),
                 })
             })
             .collect::<StorageResult<Vec<_>>>()?;
@@ -119,6 +121,7 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM membership_accounts) +
              (SELECT COUNT(*) FROM membership_host) +
              (SELECT COUNT(*) FROM conversations) +
+             (SELECT COUNT(*) FROM conversation_composers) +
              (SELECT COUNT(*) FROM messages) +
              (SELECT COUNT(*) FROM tasks) +
              (SELECT COUNT(*) FROM proposed_actions) +

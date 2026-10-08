@@ -109,7 +109,93 @@ does not establish an owner-subscription service for remote public customers.
 These are provider additions to implement and verify, not a current connected
 provider claim.
 
-## Alpha 2 scoped CrowQuant integration
+## CrowClaw desktop workspace expansion — authorized 2026-10-09
+
+Crow wants the breadth of the Windows ChatGPT/Codex working experience expressed
+as CrowClaw's own standalone product: both the visible controls and the runtime
+capabilities behind them. This is a behavioral target, not permission to copy
+another application's implementation, identity, private services or user state.
+It adds to the approved memory, Evolution, CrowNest and God mode roadmap.
+
+### Chat and model control
+
+- Put account/provider, model and reasoning choices at the conversation composer.
+  Permit a model change during an existing conversation without discarding its
+  history, draft or attachments. Changes apply to the next submitted turn, never
+  retroactively to a running or approval-paused task.
+- Each conversation owns its next-turn choice; each submitted task retains an
+  immutable account/provider/model/effort snapshot. Display requested/reported
+  model identity where available. Switching chats must not silently transfer a
+  different account or model choice into another chat.
+- Show models and effort levels actually offered by the selected account/provider.
+  Support the range through ultra when offered, not a universal hard-coded list.
+  Do not map unsupported settings to a different effort silently. Missing metadata
+  means unknown/provider default, not invented capability. A stale catalog or
+  disconnected account must produce a recoverable error, not another billing route.
+- Crow's current agent-operated membership tests remain limited to Luna first,
+  Sol 6.1 if needed, low/medium/high only. The product's selectable capabilities
+  are not restricted by this temporary testing policy.
+- Add attachments with explicit selection, removal, preview, type/size limits and
+  provenance. Support modalities only through a verified provider/tool capability;
+  attaching a file must not silently upload an entire directory or unrelated data.
+- Preserve accessible keyboard interaction, IME-safe Enter, multiline composition,
+  draft recovery, send/stop/cancel states and action-specific approvals.
+
+### Workspace and navigation
+
+- Left navigation: projects/workspaces, grouped chats, spaces/collections,
+  schedules, skills/plugins and connected capabilities. Register existing folders
+  by reference; never move, merge or duplicate the user's project files to create
+  a project entry. Keep project/account ownership and histories distinct.
+- Right work area: independently selectable, resizable and closable panels for
+  files/artifacts and previews, browser, terminal, source/diffs/review, task/tool
+  activity and related chats. Panels preserve useful state across navigation;
+  closing a panel is not implicit cancellation or deletion of the underlying work.
+- Top navigation: native File/Edit/View/Help actions, back/forward, sidebar/panel
+  toggles and keyboard shortcuts, backed by real commands and navigation state.
+- Account area: sign-in/out, selected account, provider-authoritative usage and
+  reset information where exposed, settings, help and optional CrowClaw pet
+  controls. Unknown usage is shown as unavailable; never invent a remaining quota.
+
+### Extensible capabilities and execution
+
+- Native CrowClaw skill, plugin, hook and MCP management: discover/configure,
+  enable/disable, inspect capabilities/permissions, invoke, cancel, diagnose and
+  remove through supported lifecycle operations. Do not presume another product's
+  plugin package, marketplace or subscription-only tool works unchanged here.
+- One native capability registry drives both tool availability and relevant UI
+  entries. Distinguish not installed, disabled, disconnected, unsupported, ready,
+  busy and failed. A new connection adds only the surfaces it actually supplies.
+- Local application/file/command control, browser work, remote/SSH connections,
+  scheduled/background work and richer artifacts require their own verified
+  adapters, scoped credentials, visible activity and recovery. A membership login
+  authorizes eligible model inference; it does not itself supply these runtimes.
+- Persist projects, conversations, drafts, turn choices, schedules, capability
+  configuration and panel layout under CrowClaw's native ownership. Keep protected
+  credentials separate from content exports. Extensions/hooks cannot silently
+  change native approval boundaries or inherit other applications' credentials.
+- Local operation and existing model providers remain available. No paid service,
+  donor checkout, Codex installation or private account is a prerequisite for the
+  standalone core. External optional integrations declare their own requirements.
+
+### Delivery and acceptance
+
+Deliver in coherent vertical slices: composer/turn choice; attachment lifecycle;
+workspace/navigation/panels; extension registry and skill/MCP/hook execution;
+scheduling/remote/application adapters; account/usage/help/pet controls. Reuse the
+same native owners rather than introducing separate databases for each surface.
+The existing checkpoint owns detailed order and active work; this is not a claim
+that these capabilities are already implemented.
+
+Each delivered control must exercise its real backing operation, preserve scope
+and state through restart, and expose actionable failure/recovery. Verify keyboard
+and narrow-window behavior, running-task/model-change isolation, cross-account
+and cross-project separation, cancellation and disable/revoke transitions. Missing
+vendor functionality or account eligibility is a stated boundary, not a hidden
+fallback or a decorative enabled control. Public release truth remains governed
+by the installer acceptance rules above.
+
+## Alpha 2 scoped CrowQuant integration (historical acceptance)
 
 The Alpha 1 boundary above remains part of the release history. Alpha 2 adds one bounded integration to CrowClaw itself: a local CrowQuant-compatible memory path. It does not import, rewrite, or modify the separate CrowQuant repository.
 

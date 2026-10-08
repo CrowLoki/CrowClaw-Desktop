@@ -42,6 +42,26 @@ impl Storage {
         account_from(&connection, id)
     }
 
+    /// Validate a conversation's choice without changing account/app defaults.
+    pub fn membership_validate_selection(
+        &self,
+        selection: &MembershipSelection,
+    ) -> StorageResult<MembershipAccount> {
+        let account = self.membership_account(&selection.account_id)?;
+        if !account.has_credentials || account.identity.provider != "chatgpt" {
+            return Err(StorageError::Conflict(
+                "Reconnect this saved ChatGPT account".into(),
+            ));
+        }
+        validate_selection(
+            account.catalog.as_ref().ok_or_else(|| {
+                StorageError::InvalidData("Refresh this account's model catalog".into())
+            })?,
+            selection,
+        )?;
+        Ok(account)
+    }
+
     /// Duplicate registrations cannot overwrite saved tokens. Returning sign-in
     /// uses the versioned replacement method, after validating its signed ID.
     pub(crate) fn membership_add_account(

@@ -12,6 +12,8 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
+pub mod composer;
+
 use crate::{
     agent::{
         AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession, CancellationToken, ChatMessage,
@@ -1048,6 +1050,12 @@ pub struct ConversationMessage {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reported_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1258,6 +1266,7 @@ pub struct ChatSendRequest {
     conversation_id: String,
     content: String,
     selected_folder: Option<SelectedFolder>,
+    composer_revision: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1361,10 +1370,14 @@ async fn connect_local_model(
         return Err(tested.detail);
     }
     state.connection_changes.publish(change, || {
+        // A different local endpoint is a different owned connection. Preserve
+        // profiles already referenced by conversations instead of overwriting
+        // the old single global-profile slot.
+        let profile_id = local_connection_profile_id(state, &request)?;
         let profile = state
             .storage
             .save_provider_profile(&ProviderProfileInput {
-                id: DEFAULT_PROVIDER_ID.into(),
+                id: profile_id,
                 name: non_empty_or(&request.label, "Local model"),
                 base_url: request.base_url.trim().trim_end_matches('/').into(),
                 model: tested
@@ -1385,6 +1398,44 @@ async fn connect_local_model(
         }
         Ok(connection_view(&profile, "connected", tested.latency_ms))
     })
+}
+
+fn local_connection_profile_id(
+    state: &AppState,
+    request: &ModelEndpointDraft,
+) -> Result<String, String> {
+    let profiles = state
+        .storage
+        .list_provider_profiles()
+        .map_err(display_error)?;
+    let base_url = request.base_url.trim().trim_end_matches('/');
+    let keys = state
+        .session_api_keys
+        .lock()
+        .map_err(|_| "API-key session lock was poisoned")?;
+    let requested_key = request
+        .api_key
+        .as_ref()
+        .filter(|key| !key.trim().is_empty());
+    Ok(profiles
+        .iter()
+        .find(|profile| {
+            profile.provider_kind == request.provider.storage_name()
+                && profile.base_url == base_url
+                && profile.credential_reference.is_none()
+                && keys.get(&profile.id) == requested_key
+        })
+        .map(|profile| profile.id.clone())
+        .unwrap_or_else(|| {
+            if profiles
+                .iter()
+                .all(|profile| profile.id != DEFAULT_PROVIDER_ID)
+            {
+                DEFAULT_PROVIDER_ID.into()
+            } else {
+                format!("local:{}", Uuid::new_v4())
+            }
+        }))
 }
 
 #[tauri::command]
@@ -1610,40 +1661,26 @@ pub async fn crowclaw_chat_send(
         .storage
         .list_messages(&conversation.id)
         .map_err(display_error)?;
-    let first_user_message = !previous
-        .iter()
-        .any(|message| message.role == StoredMessageRole::User);
-    state
-        .storage
-        .append_message(&MessageInput {
-            id: Uuid::new_v4().to_string(),
-            conversation_id: conversation.id.clone(),
-            role: StoredMessageRole::User,
-            content: content.into(),
-            metadata: Value::Null,
-        })
-        .map_err(display_error)?;
-    if first_user_message {
-        state
-            .storage
-            .update_conversation(&ConversationInput {
-                id: conversation.id.clone(),
-                title: title_from(content),
-                provider_profile_id: conversation.provider_profile_id.clone(),
-            })
-            .map_err(display_error)?;
+    let composer = composer::ensure(&state, &conversation.id)?;
+    if request
+        .composer_revision
+        .is_some_and(|revision| revision != composer.revision)
+    {
+        return Err("This conversation's draft or model changed; review it before sending".into());
     }
-    state
-        .storage
-        .set_setting("selected_conversation_id", &conversation.id)
-        .map_err(display_error)?;
-
-    let provider_profile = state
-        .storage
-        .default_provider_profile()
-        .map_err(display_error)?
-        .ok_or_else(|| "Connect a local model before sending a message".to_string())?;
-    let provider = provider_for_profile(&state, &provider_profile)?;
+    if request.composer_revision.is_some()
+        && composer.draft.trim() != content
+        && !(composer.draft.trim().is_empty() && request.selected_folder.is_some())
+    {
+        return Err(
+            "The draft changed before submission; review the current text and send again".into(),
+        );
+    }
+    let choice = composer
+        .selection
+        .as_ref()
+        .ok_or("Choose a model for this conversation")?;
+    let (provider_profile, provider) = composer::provider_for_choice(&state, choice)?;
     let settings = load_settings(&state.storage).map_err(display_error)?;
     let selected_root = match &request.selected_folder {
         Some(folder) => Some(
@@ -1691,20 +1728,31 @@ pub async fn crowclaw_chat_send(
     };
     messages.push(ChatMessage::user(model_content));
     let task_id = Uuid::new_v4().to_string();
-    let task = state
+    let (_, task, _) = state
         .storage
-        .create_task(&TaskInput {
-            id: task_id.clone(),
-            conversation_id: Some(conversation.id.clone()),
-            kind: "agent-turn".into(),
-            payload: json!({
-                "title": title_from(content),
-                "detail": "Working with the connected local model",
-                "selectedFolderId": request.selected_folder.as_ref().map(|folder| &folder.id),
-                "prompt": content,
-                "guidelineRevision": guideline_revision.revision,
-            }),
-        })
+        .begin_composer_turn(
+            &composer,
+            &MessageInput {
+                id: Uuid::new_v4().to_string(),
+                conversation_id: conversation.id.clone(),
+                role: StoredMessageRole::User,
+                content: content.into(),
+                metadata: Value::Null,
+            },
+            &TaskInput {
+                id: task_id.clone(),
+                conversation_id: Some(conversation.id.clone()),
+                kind: "agent-turn".into(),
+                payload: json!({
+                    "title": title_from(content),
+                    "detail": format!("Working with {}",provider_profile.model),
+                    "providerSnapshot": {"id":provider_profile.id,"provider":provider_profile.provider_kind,"baseUrl":provider_profile.base_url,"label":provider_profile.name,"model":provider_profile.model},
+                    "selectedFolderId": request.selected_folder.as_ref().map(|folder| &folder.id),
+                    "prompt": content,
+                    "guidelineRevision": guideline_revision.revision,
+                }),
+            },
+        )
         .map_err(display_error)?;
     let running = state
         .storage
@@ -1731,16 +1779,22 @@ pub async fn crowclaw_chat_send(
         .run_until_blocked(&mut session, &live.cancellation)
         .await;
     let pending_actions = match outcome {
-        Ok(AgentRunOutcome::Completed { message, .. }) => {
-            let result = json!({ "message": message.content });
+        Ok(AgentRunOutcome::Completed {
+            message,
+            reported_model,
+            ..
+        }) => {
+            let result = json!({ "message": message.content, "reportedModel":reported_model });
             let terminal_message = assistant_message_input(
+                &state.storage,
                 &conversation.id,
                 &task_id,
                 message
                     .content
                     .as_deref()
                     .unwrap_or("CrowClaw completed the task without a text response."),
-            );
+                reported_model.as_deref(),
+            )?;
             match settle_task_with_message(
                 &state.storage,
                 &task_id,
@@ -1902,16 +1956,22 @@ pub async fn crowclaw_action_decide(
         .remove(&request.action_id);
 
     let pending_actions = match run {
-        Ok(AgentRunOutcome::Completed { message, .. }) => {
-            let result = json!({ "message": message.content });
+        Ok(AgentRunOutcome::Completed {
+            message,
+            reported_model,
+            ..
+        }) => {
+            let result = json!({ "message": message.content, "reportedModel":reported_model });
             let terminal_message = assistant_message_input(
+                &state.storage,
                 &live.conversation_id,
                 &task_id,
                 message
                     .content
                     .as_deref()
                     .unwrap_or("CrowClaw completed the task without a text response."),
-            );
+                reported_model.as_deref(),
+            )?;
             match settle_task_with_message(
                 &state.storage,
                 &task_id,
@@ -1946,10 +2006,12 @@ pub async fn crowclaw_action_decide(
         Err(error) if error.is_cancelled() => Vec::new(),
         Err(error) => {
             let terminal_message = assistant_message_input(
+                &state.storage,
                 &live.conversation_id,
                 &task_id,
                 &format!("The approved task stopped safely: {error}"),
-            );
+                None,
+            )?;
             match settle_task_with_message(
                 &state.storage,
                 &task_id,
@@ -2196,6 +2258,23 @@ fn message_view(message: Message) -> Option<ConversationMessage> {
         content: message.content,
         created_at: iso(message.created_at_ms),
         status: "sent",
+        requested_model: message
+            .metadata
+            .get("modelSelection")
+            .and_then(|s| s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        reported_model: message
+            .metadata
+            .get("reportedModel")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        reasoning_effort: message
+            .metadata
+            .get("modelSelection")
+            .and_then(|s| s.get("reasoningEffort"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         task_id: message
             .metadata
             .get("taskId")
@@ -2331,14 +2410,24 @@ fn persist_runtime_actions(
     Ok(views)
 }
 
-fn assistant_message_input(conversation_id: &str, task_id: &str, content: &str) -> MessageInput {
-    MessageInput {
+fn assistant_message_input(
+    storage: &Storage,
+    conversation_id: &str,
+    task_id: &str,
+    content: &str,
+    reported_model: Option<&str>,
+) -> Result<MessageInput, String> {
+    let task = storage
+        .get_task(task_id)
+        .map_err(display_error)?
+        .ok_or("Task was not found")?;
+    Ok(MessageInput {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.into(),
         role: StoredMessageRole::Assistant,
         content: content.into(),
-        metadata: json!({ "taskId": task_id }),
-    }
+        metadata: json!({ "taskId": task_id, "modelSelection":task.payload.get("modelSelection"), "reportedModel":reported_model.filter(|model|model.len()<=256 && !model.contains('\0')) }),
+    })
 }
 
 fn record_tool_executions(

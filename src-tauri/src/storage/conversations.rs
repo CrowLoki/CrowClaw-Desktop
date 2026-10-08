@@ -83,50 +83,9 @@ impl Storage {
         let metadata_json = value_to_json(&input.metadata)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let conversation_exists: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
-            [&input.conversation_id],
-            |row| row.get(0),
-        )?;
-        if !conversation_exists {
-            return Err(StorageError::not_found(
-                "conversation",
-                &input.conversation_id,
-            ));
-        }
-        let ordinal: i64 = transaction.query_row(
-            "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM messages WHERE conversation_id = ?1",
-            [&input.conversation_id],
-            |row| row.get(0),
-        )?;
-        transaction.execute(
-            r#"INSERT INTO messages (
-                   id, conversation_id, ordinal, role, content, metadata_json, created_at_ms
-               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-            params![
-                input.id,
-                input.conversation_id,
-                ordinal,
-                input.role.as_str(),
-                input.content,
-                metadata_json,
-                now,
-            ],
-        )?;
-        transaction.execute(
-            "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1",
-            params![input.conversation_id, now],
-        )?;
+        let message = append_message_in(&transaction, input, &metadata_json, now)?;
         transaction.commit()?;
-        Ok(Message {
-            id: input.id.clone(),
-            conversation_id: input.conversation_id.clone(),
-            ordinal,
-            role: input.role,
-            content: input.content.clone(),
-            metadata: input.metadata.clone(),
-            created_at_ms: now,
-        })
+        Ok(message)
     }
 
     pub fn list_messages(&self, conversation_id: &str) -> StorageResult<Vec<Message>> {
@@ -134,6 +93,58 @@ impl Storage {
         let connection = self.connection()?;
         list_messages_from(&connection, conversation_id)
     }
+}
+
+/// The caller owns validation and the transaction, including trigger effects.
+pub(super) fn append_message_in(
+    transaction: &rusqlite::Transaction<'_>,
+    input: &MessageInput,
+    metadata_json: &str,
+    now: i64,
+) -> StorageResult<Message> {
+    let conversation_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+        [&input.conversation_id],
+        |row| row.get(0),
+    )?;
+    if !conversation_exists {
+        return Err(StorageError::not_found(
+            "conversation",
+            &input.conversation_id,
+        ));
+    }
+    let ordinal: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM messages WHERE conversation_id = ?1",
+        [&input.conversation_id],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        r#"INSERT INTO messages (
+                   id, conversation_id, ordinal, role, content, metadata_json, created_at_ms
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+        params![
+            input.id,
+            input.conversation_id,
+            ordinal,
+            input.role.as_str(),
+            input.content,
+            metadata_json,
+            now,
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1",
+        params![input.conversation_id, now],
+    )?;
+    Ok(Message {
+        id: input.id.clone(),
+        conversation_id: input.conversation_id.clone(),
+        ordinal,
+        role: input.role,
+        content: input.content.clone(),
+        metadata: input.metadata.clone(),
+        created_at_ms: now,
+    })
 }
 
 type RawConversation = (String, String, Option<String>, i64, i64, Option<i64>);

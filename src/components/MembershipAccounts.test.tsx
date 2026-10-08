@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { MembershipAccount, ModelConnection } from "../gateway/contracts";
+import type { ConversationComposerState, ConversationModelChoice } from "../gateway/composerContracts";
 import { createDevelopmentGateway } from "../gateway/developmentGateway";
 
 // jsdom has no top layer. Only emulate dialog visibility; assertions exercise real App state.
@@ -33,13 +34,81 @@ function connection(id: string, model = `model-${id}`): ModelConnection {
 
 function fixture(accounts: MembershipAccount[] = [account("A", "Personal"), account("B", "Work")], firstRun = false, acknowledged = true) {
   const gateway = createDevelopmentGateway({ firstRun, delayMs: 0 });
+  // Native membership boundary: Settings owns the seed for future chats; saved
+  // composers own their choices. The production preview has no membership login.
+  const registrations = new Map(accounts.map(item => [item.id, item]));
+  const composers = new Map<string, ConversationComposerState>();
+  let defaultChoice: ConversationModelChoice | null = null;
+  const localComposer = gateway.getComposer.bind(gateway);
+  vi.spyOn(gateway, "getComposer").mockImplementation(async (id) => {
+    const local = await localComposer(id);
+    let composer = composers.get(id);
+    if (!composer) {
+      composer = { ...local.composer, selection: defaultChoice ? { ...defaultChoice } : local.composer.selection };
+      composers.set(id, composer);
+    }
+    const sources = [...local.sources, ...[...registrations.values()].map(item => ({
+      id: `membership:${item.id}`, label: item.label, provider: "chatgpt",
+      status: item.hasCredentials ? "ready" as const : "disconnected" as const,
+      models: item.hasCredentials && item.catalog?.accountId === item.id
+        ? item.catalog.models.map(model => ({ id: model.slug, displayName: model.displayName, reasoningEfforts: model.reasoningEfforts })) : [],
+    }))];
+    const choice = composer.selection;
+    const source = sources.find(item => item.id === choice?.providerProfileId);
+    const model = source?.models.find(item => item.id === choice?.model);
+    const available = source?.status === "ready" && model && (choice?.reasoningEffort === null || model.reasoningEfforts.includes(choice!.reasoningEffort!));
+    const selectedConnection = choice?.providerProfileId.startsWith("membership:")
+      ? connection(choice.providerProfileId.slice("membership:".length), choice.model)
+      : local.connection;
+    return { composer: structuredClone(composer), sources, connection: available ? selectedConnection : null,
+      warning: available ? null : "Selected account or model is unavailable. Reconnect or choose an available model." };
+  });
+  vi.spyOn(gateway, "saveComposerDraft").mockImplementation(async (id, revision, draft) => {
+    const { composer } = await gateway.getComposer(id);
+    if (composer.revision !== revision) throw new Error("Composer revision changed");
+    composers.set(id, { ...composer, draft, revision: revision + 1 });
+    return gateway.getComposer(id);
+  });
+  vi.spyOn(gateway, "chooseComposerModel").mockImplementation(async (id, revision, selection) => {
+    const { composer, sources } = await gateway.getComposer(id);
+    const source = sources.find(item => item.id === selection.providerProfileId);
+    const model = source?.models.find(item => item.id === selection.model);
+    if (composer.revision !== revision || source?.status !== "ready" || !model
+      || (selection.reasoningEffort !== null && !model.reasoningEfforts.includes(selection.reasoningEffort))) throw new Error("Unavailable composer choice");
+    composers.set(id, { ...composer, selection: { ...selection }, revision: revision + 1 });
+    return gateway.getComposer(id);
+  });
+  vi.spyOn(gateway, "refreshComposerModels").mockImplementation(async (id) => {
+    const conversationId = composers.keys().next().value;
+    if (!conversationId) throw new Error("No composer loaded");
+    const source = (await gateway.getComposer(conversationId)).sources.find(item => item.id === id);
+    if (!source) throw new Error("Unknown source");
+    return source;
+  });
+  const createConversation = gateway.createConversation.bind(gateway);
+  vi.spyOn(gateway, "createConversation").mockImplementation(async () => {
+    const created = await createConversation();
+    await gateway.getComposer(created.conversation.id);
+    return created;
+  });
   vi.spyOn(gateway, "membershipSnapshot").mockResolvedValue({ accounts, welcomeAcknowledged: acknowledged });
   vi.spyOn(gateway, "refreshMembershipModels").mockImplementation(async (id) => accounts.find((item) => item.id === id)!);
-  vi.spyOn(gateway, "useMembershipModel").mockImplementation(async (request) => connection(request.accountId, request.model));
+  vi.spyOn(gateway, "useMembershipModel").mockImplementation(async (request) => {
+    // A newly signed-in registration may be supplied by a deferred test reply.
+    const refreshed = vi.mocked(gateway.refreshMembershipModels).mock.results.at(-1);
+    const returned: MembershipAccount | undefined = refreshed?.type === "return" ? await refreshed.value : undefined;
+    if (returned?.id === request.accountId) registrations.set(returned.id, returned);
+    defaultChoice = { providerProfileId: `membership:${request.accountId}`, model: request.model, reasoningEffort: request.reasoningEffort };
+    return connection(request.accountId, request.model);
+  });
   vi.spyOn(gateway, "acknowledgeMembershipWelcome").mockResolvedValue();
   vi.spyOn(gateway, "manageMembershipUsage").mockResolvedValue();
   vi.spyOn(gateway, "signInMembership").mockResolvedValue(accounts[0] ?? account("new"));
-  vi.spyOn(gateway, "signOutMembership").mockImplementation(async (id) => ({ account: { ...accounts.find((item) => item.id === id)!, hasCredentials: false, catalog: null, selection: null }, remoteRevoked: true, detail: "Revocation confirmed by provider." }));
+  vi.spyOn(gateway, "signOutMembership").mockImplementation(async (id) => {
+    const signedOut = { ...registrations.get(id)!, hasCredentials: false, catalog: null, selection: null };
+    registrations.set(id, signedOut);
+    return { account: signedOut, remoteRevoked: true, detail: "Revocation confirmed by provider." };
+  });
   vi.spyOn(gateway, "cancelMembershipSignIn").mockResolvedValue(true);
   return gateway;
 }
@@ -58,6 +127,12 @@ async function useAccount(id: string) {
   await waitFor(() => expect(screen.getByLabelText("ChatGPT model (required)")).toBeEnabled());
   await userEvent.selectOptions(screen.getByLabelText("ChatGPT model (required)"), `model-${id}`);
   await userEvent.click(screen.getByRole("button", { name: "Use this model" }));
+}
+
+async function newChat() {
+  await userEvent.click(screen.getByRole("button", { name: "Chat" }));
+  await userEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled());
 }
 
 describe("Native membership account workflow", () => {
@@ -225,7 +300,7 @@ describe("Native membership account workflow", () => {
     expect(screen.getByLabelText("Saved ChatGPT account")).toHaveValue("A");
   });
 
-  it("uses provider default for an empty effort catalog and explicitly applies the selected account to chat and evolution", async () => {
+  it("uses provider default for an empty effort catalog and seeds a new chat while preserving the old chat", async () => {
     const gateway = fixture([account("A", "Personal", [])]);
     render(<App gateway={gateway} />);
     await settings();
@@ -240,8 +315,11 @@ describe("Native membership account workflow", () => {
     await userEvent.click(screen.getByRole("button", { name: "Use this model" }));
     expect(gateway.useMembershipModel).toHaveBeenCalledWith({ accountId: "A", model: "model-A", reasoningEffort: null });
     await userEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect(screen.getByText("Using ChatGPT plan")).toBeVisible();
-    expect(screen.getByLabelText("Message CrowClaw")).toHaveAttribute("placeholder", "Message CrowClaw · model-A");
+    await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toHaveAttribute("placeholder", "Message CrowClaw · local-model"));
+    expect(screen.queryByText("Using ChatGPT plan")).not.toBeInTheDocument();
+    await newChat();
+    expect(await screen.findByText("Using ChatGPT plan")).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toHaveAttribute("placeholder", "Message CrowClaw · model-A"));
     await userEvent.click(screen.getByRole("button", { name: "Evolution" }));
     expect(await screen.findByText(/model-A/)).toBeVisible();
   });
@@ -306,12 +384,17 @@ describe("Native membership account workflow", () => {
     render(<App gateway={gateway} />);
     await settings();
     await useAccount("B");
+    await newChat();
+    expect(await screen.findByText("Using ChatGPT plan")).toBeVisible();
+    await settings();
     await selectAccount("A");
     await userEvent.click(screen.getByRole("button", { name: "Sign out of this account" }));
     expect(await screen.findByText(/Remote access revoked/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled();
+    await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled());
     expect(screen.getByLabelText("Message CrowClaw")).toHaveAttribute("placeholder", "Message CrowClaw · model-B");
+    await userEvent.type(screen.getByLabelText("Message CrowClaw"), "Still using account B");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
   });
 
   it("blocks removed model slugs and recovers from refresh errors only after an explicit retry", async () => {
@@ -353,17 +436,30 @@ describe("Native membership account workflow", () => {
 
   it("disconnects the active account and reports failed remote revocation without fallback", async () => {
     const gateway = fixture();
-    vi.mocked(gateway.signOutMembership).mockResolvedValue({ account: { ...account("A"), hasCredentials: false, catalog: null, selection: null }, remoteRevoked: false, detail: "Provider revocation endpoint unavailable." });
+    const signOut = vi.mocked(gateway.signOutMembership).getMockImplementation()!;
+    vi.mocked(gateway.signOutMembership).mockImplementation(async (id) => ({ ...await signOut(id), remoteRevoked: false, detail: "Provider revocation endpoint unavailable." }));
     const connectLocal = vi.spyOn(gateway, "connectModel");
+    const send = vi.spyOn(gateway, "sendMessage");
     render(<App gateway={gateway} />);
     await settings();
     await useAccount("A");
+    await newChat();
+    expect(await screen.findByText("Using ChatGPT plan")).toBeVisible();
+    await userEvent.type(screen.getByLabelText("Message CrowClaw"), "Retain this draft");
+    await settings();
+    await selectAccount("A");
     await userEvent.click(screen.getByRole("button", { name: "Sign out of this account" }));
     expect(await screen.findByText(/Remote revocation was not confirmed/)).toHaveTextContent("Provider revocation endpoint unavailable.");
     expect(screen.getByRole("option", { name: /Work.*Signed in/ })).toBeInTheDocument();
     expect(connectLocal).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect(screen.getByLabelText("Message CrowClaw")).toBeDisabled();
+    await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled());
+    expect(screen.getByLabelText("Message CrowClaw")).toHaveValue("Retain this draft");
+    await userEvent.type(screen.getByLabelText("Message CrowClaw"), " while offline{Enter}");
+    expect(screen.getByLabelText("Message CrowClaw")).toHaveValue("Retain this draft while offline");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(send).not.toHaveBeenCalled();
+    expect(connectLocal).not.toHaveBeenCalled();
     expect(screen.queryByText("Using ChatGPT plan")).not.toBeInTheDocument();
     expect(screen.getByText(/Disconnected. Choose a connection/)).toBeVisible();
   });
@@ -404,11 +500,15 @@ describe("Native membership account workflow", () => {
     render(<App gateway={gateway} />);
     await settings();
     await useAccount("A");
+    await newChat();
+    expect(await screen.findByText("Using ChatGPT plan")).toBeVisible();
+    await settings();
+    await selectAccount("A");
     await userEvent.click(screen.getByRole("button", { name: "Sign out of this account" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Credential store unavailable");
     expect(screen.getByRole("button", { name: "Sign out of this account" })).toBeEnabled();
     await userEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled();
+    await waitFor(() => expect(screen.getByLabelText("Message CrowClaw")).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "Manage usage" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not open usage settings");
   });
