@@ -2,6 +2,133 @@ use super::*;
 use crate::agent::ToolDefinition;
 
 #[test]
+fn compact_terminal_rejects_explicitly_incomplete_output_items() {
+    for status in ["incomplete", "in_progress", "failed"] {
+        let item = json!({"id":"fc_1","type":"function_call","status":status,"call_id":"call_1","name":"read_file","arguments":"{\"path\":\"selected.txt\"}"});
+        let bytes = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            completed(json!([]))
+        );
+        assert!(
+            ResponseStream::new(selection())
+                .push(bytes.as_bytes())
+                .is_err(),
+            "accepted item status {status}"
+        );
+        assert!(completed_response(&completed(json!([item]))["response"], &selection()).is_err());
+    }
+}
+
+#[test]
+fn compact_terminal_rejects_an_announced_but_unfinished_trailing_item() {
+    let bytes = format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\n",
+        json!({"type":"response.output_item.done","output_index":0,"item":text_output("Reading the file.")[0]}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","status":"in_progress","call_id":"call_1"}}),
+        completed(json!([]))
+    );
+    assert!(ResponseStream::new(selection())
+        .push(bytes.as_bytes())
+        .is_err());
+}
+
+#[test]
+fn compact_terminal_uses_completed_items_without_accepting_partial_or_failed_streams() {
+    let item = text_output("Completed item response")[0].clone();
+    let item_event = json!({"type":"response.output_item.done","output_index":0,"item":item});
+    let item_bytes = format!("data: {item_event}\n\n");
+    let mut decoder = ResponseStream::new(selection());
+    let announcement = format!(
+        "data: {}\n\n",
+        json!({"type":"response.output_item.added","output_index":0,"item":item})
+    );
+    assert!(decoder.push(announcement.as_bytes()).unwrap().is_none());
+    assert!(decoder.push(item_bytes.as_bytes()).unwrap().is_none());
+    let terminal = format!("data: {}\n\n", completed(json!([])));
+    let result = decoder.push(terminal.as_bytes()).unwrap().unwrap();
+    assert_eq!(
+        result.message.content.as_deref(),
+        Some("Completed item response")
+    );
+    let mut unfinished = ResponseStream::new(selection());
+    unfinished.push(item_bytes.as_bytes()).unwrap();
+    assert!(unfinished.finish().is_err());
+    let mut failed = ResponseStream::new(selection());
+    failed.push(item_bytes.as_bytes()).unwrap();
+    assert!(failed.push(b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n").is_err());
+    let mut duplicate = ResponseStream::new(selection());
+    duplicate.push(item_bytes.as_bytes()).unwrap();
+    assert!(duplicate.push(item_bytes.as_bytes()).is_err());
+    let mut sparse = ResponseStream::new(selection());
+    sparse
+        .push(
+            format!(
+                "data: {}\n\n",
+                json!({"type":"response.output_item.done","output_index":1,"item":item})
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    assert!(sparse.push(terminal.as_bytes()).is_err());
+}
+
+#[test]
+fn missing_stream_content_type_accepts_only_valid_completed_events() {
+    assert!(stream_content_type_supported(None));
+    for media in ["text/event-stream", "Text/Event-Stream; charset=utf-8"] {
+        assert!(stream_content_type_supported(Some(&media.parse().unwrap())));
+    }
+    for media in [
+        "application/json",
+        "text/html",
+        "text/event-stream-invalid",
+        "",
+    ] {
+        assert!(!stream_content_type_supported(Some(
+            &media.parse().unwrap()
+        )));
+    }
+    let event = completed(text_output("Headerless membership response"));
+    let stream = format!("data: {event}\n\n");
+    let mut decoder = ResponseStream::new(selection());
+    let result = decoder.push(stream.as_bytes()).unwrap().unwrap();
+    assert_eq!(
+        result.message.content.as_deref(),
+        Some("Headerless membership response")
+    );
+    for non_stream in [
+        serde_json::to_vec(&event["response"]).unwrap(),
+        b"<html>not a response</html>".to_vec(),
+    ] {
+        let mut decoder = ResponseStream::new(selection());
+        assert!(decoder.push(&non_stream).unwrap().is_none());
+        assert!(decoder.finish().is_err());
+    }
+}
+
+#[test]
+fn unexpected_response_diagnostics_do_not_echo_credentials_or_body_text() {
+    for (body, shape) in [
+        (
+            br#"{"error":{"message":"SECRET"}}"#.as_slice(),
+            "JSON error",
+        ),
+        (
+            br#"{"object":"response","output":"SECRET"}"#.as_slice(),
+            "JSON response object",
+        ),
+        (b"data: SECRET\n\n".as_slice(), "event-stream body"),
+        (b"<html>SECRET</html>".as_slice(), "unrecognized body"),
+    ] {
+        let message = unexpected_response(200, "JSON", body);
+        assert!(message.contains(shape));
+        assert!(message.contains("HTTP 200"));
+        assert!(!message.contains("SECRET"));
+    }
+}
+
+#[test]
 fn rotation_preserves_live_session_but_reconnect_and_signout_invalidate_it() {
     use crate::membership::tests::{add, protected};
     let directory = tempfile::TempDir::new().unwrap();

@@ -345,11 +345,63 @@ async (page) => {
     Invoke-NativeUi @('run-code', $qaProgram.Replace('__NOTE_KIND__', $NoteKind).Replace('__EXPECT_UPGRADE__', $ExpectUpgradeChoice.ToString().ToLowerInvariant()))
 }
 
+function Assert-InstalledMemoryApproval {
+    param([ValidateSet('user_note','legacy_crowquant')][string]$NoteKind)
+    $qaProgram = @'
+async (page) => {
+  const audit = async () => {
+    const response = await page.request.get("http://127.0.0.1:32123/__acceptance/memory");
+    if (!response.ok()) throw new Error("Model-side memory observer is unavailable");
+    return response.json();
+  };
+  await page.getByRole("button", {name:"Chat",exact:true}).click();
+  for (const [prompt,button,expectedDenied,expectedApproved] of [
+    ["PACKAGED MEMORY DENY","Deny",0,0],
+    ["PACKAGED MEMORY APPROVE","Approve once",1,0]
+  ]) {
+    await page.getByRole("button", {name:"New conversation",exact:true}).click();
+    await page.getByRole("main").getByRole("heading", {name:"New conversation",exact:true}).waitFor();
+    await page.getByRole("textbox", {name:"Message CrowClaw",exact:true}).fill(prompt);
+    await page.getByRole("button", {name:"Send message",exact:true}).click();
+    const approval = page.getByRole("alertdialog");
+    await approval.waitFor();
+    if (!(await approval.innerText()).includes("cobalt")) throw new Error("Approval omitted the actual memory query");
+    const before = await audit();
+    if (before.violations || before.deniedWithoutDisclosure !== expectedDenied || before.approvedSources.length !== expectedApproved) throw new Error("Memory result reached the model before the decision");
+    await approval.getByRole("button", {name:button,exact:true}).click();
+    const messages = page.getByRole("main").locator(".message__body");
+    if (button === "Deny") {
+      await messages.getByText("You denied searching CrowQuant memory. No stored memory was read.", {exact:true}).waitFor();
+      if (await messages.getByText("CI native telescope cobalt record", {exact:false}).count()) throw new Error("Denied conversation contains the retained note");
+    } else {
+      await messages.filter({hasText:"CI native telescope cobalt record"}).waitFor();
+    }
+  }
+  const evidence = await audit();
+  if (evidence.violations || evidence.deniedWithoutDisclosure !== 1 || evidence.approvedSources.length !== 1) throw new Error("Expected one denied and one approved memory read");
+  if (evidence.approvedSources[0].sourceKind !== "__NOTE_KIND__") throw new Error("Approved result lost its source kind");
+}
+'@
+    Invoke-NativeUi @('run-code', $qaProgram.Replace('__NOTE_KIND__', $NoteKind))
+    $script:qaChecks.agentMemoryDenialAndApproval = $true
+    $script:qaChecks.modelMemoryEvidence = Invoke-RestMethod -Uri 'http://127.0.0.1:32123/__acceptance/memory' -TimeoutSec 3
+    Invoke-NativeUi @('screenshot', ('--filename=' + (Join-Path $qaEvidence 'installed-memory-approval.png')))
+}
+
 function Assert-InstalledRegistration([string]$Version) {
     $qaReg = Get-ItemProperty -LiteralPath $qaRegistration
     if ($qaReg.DisplayVersion -ne $Version -or $qaReg.InstallLocation.Trim('"') -ne $qaInstall) {
         throw 'Installed registration does not identify the candidate.'
     }
+}
+
+function Assert-InstalledMemoryAudit {
+    param([ValidateSet('user_note','legacy_crowquant')][string]$NoteKind)
+    $qaObserverFile = Join-Path $qaRoot 'model-memory-observation.json'
+    $qaChecks.modelMemoryEvidence | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $qaObserverFile -Encoding utf8NoBOM
+    $qaAuditJson = & node (Join-Path $qaRepository 'tests\support\installed-memory-audit.mjs') (Join-Path $qaData 'crowclaw.sqlite3') $qaObserverFile $NoteKind
+    if ($LASTEXITCODE -ne 0) { throw 'Installed memory action/audit evidence did not match the model observation.' }
+    $script:qaChecks.agentMemoryAudit = $qaAuditJson | ConvertFrom-Json
 }
 
 function Start-ModelFixture {
@@ -450,7 +502,12 @@ try {
     Assert-NativeRuntime
     $qaChecks.restartAndOfflineRecall = $true
     Invoke-NativeUi @('screenshot', '--filename=output/playwright/installed-memory-after-restart.png')
+    Start-ModelFixture
+    Assert-InstalledMemoryApproval -NoteKind $qaNoteKind
+    if (-not $qaModel.HasExited) { $qaModel.Kill(); $qaModel.WaitForExit(5000) | Out-Null }
+    $qaModel = $null
     Stop-InstalledApp
+    Assert-InstalledMemoryAudit -NoteKind $qaNoteKind
     $qaBefore = Get-DataHashes
     if (-not [IO.Path]::GetFullPath($qaUninstaller).StartsWith($qaRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Uninstaller escaped its owned directory.' }
     # Use normal NSIS self-removal. _?= suppresses its temporary copy and can

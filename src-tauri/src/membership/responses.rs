@@ -9,7 +9,11 @@ use crate::agent::{
 };
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
 pub struct MembershipProvider {
@@ -93,15 +97,30 @@ impl MembershipProvider {
                 body: provider_failure(status.as_u16(), &bytes),
             });
         }
-        if !response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|value| value.starts_with("text/event-stream"))
-        {
-            return Err(invalid(
-                "ChatGPT did not return the required response stream",
-            ));
+        if !stream_content_type_supported(response.headers().get(reqwest::header::CONTENT_TYPE)) {
+            // Classify unexpected replies without exposing arbitrary response
+            // bodies, account details, credentials or server-supplied headers.
+            let media = match response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+            {
+                Some("application/json") => "JSON",
+                Some("text/html") => "HTML",
+                Some("text/plain") => "plain text",
+                None => "missing content type",
+                _ => "other content type",
+            };
+            let bytes = tokio::select! {
+                _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+                result = read_body(response,&self.session,RESPONSE_LIMIT) => result.map_err(|message|ProviderError::Transport{message})?,
+            };
+            return Err(invalid(&unexpected_response(
+                status.as_u16(),
+                media,
+                &bytes,
+            )));
         }
         let mut decoder = ResponseStream::new(self.selection.clone());
         loop {
@@ -133,6 +152,35 @@ fn invalid(message: &str) -> ProviderError {
     ProviderError::InvalidResponse {
         message: message.into(),
     }
+}
+fn stream_content_type_supported(value: Option<&reqwest::header::HeaderValue>) -> bool {
+    // The live membership endpoint can omit Content-Type while returning SSE.
+    // A missing advisory header is not failure: the bounded stream decoder must
+    // still validate the actual events and require response.completed. Explicit
+    // non-SSE types remain errors; never fall back to accepting a JSON response.
+    value.is_none_or(|value| {
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/event-stream"))
+    })
+}
+fn unexpected_response(status: u16, media: &str, bytes: &[u8]) -> String {
+    let shape = if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if value.get("error").is_some_and(|error| !error.is_null()) {
+            "JSON error"
+        } else if value["object"] == "response" {
+            "JSON response object"
+        } else {
+            "other JSON"
+        }
+    } else if bytes.starts_with(b"event:") || bytes.starts_with(b"data:") {
+        "event-stream body"
+    } else {
+        "unrecognized body"
+    };
+    format!("ChatGPT did not return the required response stream (HTTP {status}; {media}; {shape})")
 }
 fn request_body(
     request: &ChatCompletionRequest,
@@ -198,6 +246,8 @@ struct ResponseStream {
     data: Vec<String>,
     consumed: usize,
     terminal: bool,
+    completed_items: BTreeMap<usize, Value>,
+    pending_items: HashSet<usize>,
 }
 impl ResponseStream {
     fn new(selection: MembershipSelection) -> Self {
@@ -207,6 +257,8 @@ impl ResponseStream {
             data: Vec::new(),
             consumed: 0,
             terminal: false,
+            completed_items: BTreeMap::new(),
+            pending_items: HashSet::new(),
         }
     }
     fn push(&mut self, bytes: &[u8]) -> Result<Option<ChatCompletion>, ProviderError> {
@@ -253,8 +305,57 @@ impl ResponseStream {
         let event: Value =
             serde_json::from_str(&data).map_err(|_| invalid("Response stream event is invalid"))?;
         match event.get("type").and_then(|v| v.as_str()) {
+            Some("response.output_item.added") => {
+                let index = output_index(&event)?;
+                if !event.get("item").is_some_and(Value::is_object) {
+                    return Err(invalid("Announced output item is invalid"));
+                }
+                if self.completed_items.contains_key(&index) || !self.pending_items.insert(index) {
+                    return Err(invalid("Response repeats an announced output item"));
+                }
+                Ok(None)
+            }
+            Some("response.output_item.done") => {
+                let index = output_index(&event)?;
+                let item = event
+                    .get("item")
+                    .filter(|item| item.is_object())
+                    .ok_or_else(|| invalid("Completed output item is invalid"))?;
+                validate_completed_item(item)?;
+                if self.completed_items.insert(index, item.clone()).is_some() {
+                    return Err(invalid("Response repeats a completed output item"));
+                }
+                self.pending_items.remove(&index);
+                Ok(None)
+            }
             Some("response.completed") => {
-                let completion = completed_response(&event["response"], &self.selection)?;
+                let mut response = event["response"].clone();
+                // Some streaming envelopes omit the already-emitted output from
+                // their terminal snapshot. Retain only complete item events,
+                // never partial text/argument deltas, and still require the
+                // successful response-level terminal event below.
+                if response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+                    && !self.completed_items.is_empty()
+                {
+                    if !self.pending_items.is_empty()
+                        || self
+                            .completed_items
+                            .keys()
+                            .copied()
+                            .ne(0..self.completed_items.len())
+                    {
+                        return Err(invalid("Response is missing completed output items"));
+                    }
+                    response["output"] = Value::Array(
+                        std::mem::take(&mut self.completed_items)
+                            .into_values()
+                            .collect(),
+                    );
+                }
+                let completion = completed_response(&response, &self.selection)?;
                 self.terminal = true;
                 Ok(Some(completion))
             }
@@ -286,6 +387,25 @@ impl ResponseStream {
     }
 }
 
+fn output_index(event: &Value) -> Result<usize, ProviderError> {
+    event["output_index"]
+        .as_u64()
+        .filter(|index| *index < 1024)
+        .map(|index| index as usize)
+        .ok_or_else(|| invalid("Response output item index is invalid"))
+}
+
+fn validate_completed_item(item: &Value) -> Result<(), ProviderError> {
+    if item
+        .get("status")
+        .filter(|status| !status.is_null())
+        .is_some_and(|status| status != "completed")
+    {
+        return Err(invalid("Response contains an unfinished output item"));
+    }
+    Ok(())
+}
+
 fn completed_response(
     response: &Value,
     selection: &MembershipSelection,
@@ -303,6 +423,7 @@ fn completed_response(
     let mut calls = Vec::new();
     let mut call_ids = HashSet::new();
     for item in items {
+        validate_completed_item(item)?;
         match item.get("type").and_then(|v| v.as_str()) {
             Some("message") => {
                 if item["role"] != "assistant" {

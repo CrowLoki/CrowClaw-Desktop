@@ -539,3 +539,100 @@ Membership controls were ready, and the candidate closed normally. A separate
 schema-7 regression preserves existing protected credential bytes and registration
 identity through upgrade. This does not replace the live-account and packaged
 acceptance gaps stated above.
+
+### Combined installed candidate verified and source merged
+
+[Run 37772944228](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37772944228)
+tested exact source `15f03b695cb58c93db33c2883561660fbd629d04`. Windows build,
+fresh installation and Alpha 3 upgrade all passed with zero annotations on each
+job. Publication was skipped. Both modes tested the same installer:
+
+- Installer SHA-256: `652f202a541d925e7475149ce29f3f086e7ad9404baa6ce8f668db7a6860d58b`.
+- Unbundled executable SHA-256: `917BDB1EC0EC1EC649D2100ED72B4009EC68E4E667E9CDAB72DBBFC586DF4575`.
+- Installed executable SHA-256: `36634E02E41E58F039DF8A020B6AC20C2E76CFC4BC2F82C3C970AD9D767043EE`.
+
+The installed binary passed the exact NSIS-marker normalization check. Both
+paths proved normal shortcuts, onboarding, two conversations/notes, offline
+restart/recall, the native-only process tree and uninstall retaining data. Upgrade
+advanced schema 2 to 8 while preserving canonical digest
+`5bfb9c82baeccc9ad7dbe9fd03f9e1bfabe8a7bcbd6b6a5ad56b8adb7e7fb643`.
+Both receipts confirm owned driver-policy cleanup and no remaining installation.
+Evidence artifacts are `CrowClaw-native-acceptance-fresh-37772944228` and
+`CrowClaw-native-acceptance-upgrade-37772944228` on that run.
+
+[PR #4](https://github.com/CrowLoki/CrowClaw-Desktop/pull/4) was merged using Merge
+at `fc2043abc37967fbd4f8bbe9674a9c086da1a6c8`; its tree matches the tested source.
+This verifies the combined candidate's basic installed lifecycle, not every
+packaged journey or live membership behavior. The remaining boundaries above
+still apply, and no Alpha 4 tag/release was published.
+
+### Live ChatGPT membership acceptance — 2026-10-09
+
+Real OpenAI authorization, protected native credential storage and the selected
+account's live model catalog succeeded through the actual CrowClaw executable.
+The account offered both `gpt-6-luna` and `gpt-6.1-sol`; tests used Luna at low,
+medium and high reasoning only. No API key, borrowed credentials, paid fallback,
+alternative model or reasoning effort above high was used.
+
+The first real requests exposed two stream compatibility defects: the successful
+HTTP reply omitted Content-Type, and its final response snapshot omitted output
+already emitted as completed item events. CrowClaw now tolerates the missing
+advisory header while validating the bounded SSE body, and retains indexed
+`response.output_item.done` events for an empty terminal output array. Valid
+`response.completed` remains mandatory. Explicit non-SSE types, incomplete or
+failed streams, duplicate/sparse completed items and JSON/HTML bodies do not
+become successful responses. Unexpected-body diagnostics do not expose contents.
+
+Verified on the corrected native executable:
+
+- Luna returned the exact requested reply at low, medium and high.
+- At low, Luna proposed one `search_memory` action for synthetic test-profile
+  content. The native approval dialog appeared before execution. After approval,
+  it received two results and reported that count correctly.
+- Read-only native audit confirmed `proposed`, `approved`, `succeeded`, exactly
+  one matching action, two results and a succeeded task.
+- Full process restart retained the protected account, model and low effort;
+  another real membership request completed without signing in again.
+- All 50 membership-focused tests pass, including 10 stream/provider tests.
+  The normal bundled native build and `git diff --check` pass.
+- The final full Rust suite passes 175 tests (101 library, 23 agent-runtime,
+  10 Evolution, 24 memory-foundation, 10 semantic-memory, 7 storage), with no
+  failures. All 65 frontend tests pass; Rust format checking passes.
+
+Executable SHA-256:
+`D45DE3F3E154433DE700516F7432D58FF31BE1DFF606C426B2A2F618A73C328B`.
+
+This supersedes the earlier chooser-only/live-inference gap, not the remaining
+release gates. The exact installed artifact has not yet been tested with this
+stream fix. Real token-expiry renewal, reconnect, quota exhaustion and remote
+sign-out remain separate live checks; synthetic coverage is not their acceptance.
+Chrome displayed `ERR_BLOCKED_BY_CLIENT` on the return page even though native
+callback/token exchange succeeded; that browser rendering issue is unresolved.
+Sol was available but unnecessary for these bounded tests and was not invoked.
+No private account identity, credential, host identifier or machine path is
+included in this receipt. No Alpha 4 release is claimed.
+
+### Stream review and reconnect follow-up
+
+Independent review found two compact-stream edge cases: an explicitly incomplete
+item could be promoted into output, and an announced trailing item could remain
+unfinished while a completed prefix was accepted. Both new regressions failed
+before correction. The decoder now rejects explicit non-completed item statuses
+in both item events and populated terminal output, and requires every announced
+item to finish before compact reconstruction. The reviewer rechecked both fixes
+and reported no remaining finding in that bounded review. All 12 response tests
+pass, including the two regressions and positive announced-item completion.
+The complete membership-focused suite passes 52 tests; native build, formatting
+and diff checks pass.
+
+Real saved-account reconnect succeeded without changing the registration's model
+or low effort, and another request succeeded with the renewed connection. The
+corrected native build then reopened that profile and passed another Luna/low
+request plus another approval-gated memory search/follow-up. The native read-only
+audit confirms both observed searches returned two results and each followed
+proposed/approved/succeeded with a succeeded task.
+
+Corrected executable SHA-256:
+`977F0C4A37E8EDFFC4C27362E5DD81B7406C3C2EEA29103A8F21C81749FB311C`.
+The previous exact-installer and remaining lifecycle/browser boundaries still
+apply; successful reconnect supersedes only its earlier unverified status.

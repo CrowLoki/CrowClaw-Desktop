@@ -1,10 +1,21 @@
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 
 const host = process.env.CROWCLAW_TEST_HOST ?? "127.0.0.1";
 const port = Number(process.env.CROWCLAW_TEST_PORT ?? "32123");
 const model = "crowclaw-acceptance-model";
 
 const memoryScenarios = {
+  "PACKAGED MEMORY DENY": {
+    callId: "call-packaged-search-deny",
+    name: "search_memory",
+    arguments: { query: "cobalt", limit: 2 },
+  },
+  "PACKAGED MEMORY APPROVE": {
+    callId: "call-packaged-search-approve",
+    name: "search_memory",
+    arguments: { query: "cobalt", limit: 2 },
+  },
   "MEMORY DENY": {
     callId: "call-memory-deny",
     name: "remember_memory",
@@ -68,196 +79,233 @@ function toolCall(callId, name, arguments_) {
   }, { finish_reason: "tool_calls" });
 }
 
-const server = http.createServer((request, response) => {
-  if (request.method === "GET" && request.url === "/v1/models") {
-    json(response, 200, {
-      object: "list",
-      data: [{ id: model, object: "model", created: 0, owned_by: "crowclaw-test" }],
-    });
-    return;
-  }
-
-  if (request.method !== "POST" || !["/v1/chat/completions", "/v1/embeddings"].includes(request.url)) {
-    json(response, 404, { error: { message: "not found", type: "not_found" } });
-    return;
-  }
-
-  let raw = "";
-  request.setEncoding("utf8");
-  request.on("data", (chunk) => {
-    raw += chunk;
-    if (raw.length > 1_000_000) request.destroy();
-  });
-  request.on("end", () => {
-    let body;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      json(response, 400, { error: { message: "invalid JSON", type: "invalid_request" } });
+export function createModelFixture() {
+  const memoryEvidence = { deniedWithoutDisclosure: 0, approvedSources: [], violations: 0 };
+  const retainedNote = "CI native telescope cobalt record";
+  const server = http.createServer((request, response) => {
+    if (request.method === "GET" && request.url === "/__acceptance/memory") {
+      json(response, 200, memoryEvidence);
       return;
     }
-
-    if (request.url === "/v1/embeddings") {
-      const texts = Array.isArray(body.input) ? body.input : [body.input];
-      if (!texts.length || texts.length > 8 || texts.some(text => typeof text !== "string")) {
-        json(response, 400, { error: "invalid embedding batch" });
-        return;
-      }
+    if (request.method === "GET" && request.url === "/v1/models") {
       json(response, 200, {
-        model: body.model,
-        data: texts.map((text, index) => ({ index, embedding:
-          /car|vehicle|automobile/i.test(text) ? [1, 0, 0] :
-          /qubit|quantum|phase|coherence/i.test(text) ? [0, 1, 0] : [0, 0, 1]
-        })),
+        object: "list",
+        data: [{ id: model, object: "model", created: 0, owned_by: "crowclaw-test" }],
       });
       return;
     }
 
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    const latest = messages.at(-1) ?? {};
-    if (latest.role === "tool") {
-      let result = {};
+    if (request.method !== "POST" || !["/v1/chat/completions", "/v1/embeddings"].includes(request.url)) {
+      json(response, 404, { error: { message: "not found", type: "not_found" } });
+      return;
+    }
+
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 1_000_000) request.destroy();
+    });
+    request.on("end", () => {
+      let body;
       try {
-        result = JSON.parse(String(latest.content ?? "{}"));
+        body = JSON.parse(raw);
       } catch {
-        result = {};
-      }
-      if (result.state === "denied") {
-        if (latest.name === "remember_memory") {
-          json(response, 200, completion({
-            role: "assistant",
-            content: "You denied storing that CrowQuant memory. Nothing was stored.",
-          }));
-          return;
-        }
-        if (latest.name === "search_memory") {
-          json(response, 200, completion({
-            role: "assistant",
-            content: "You denied searching CrowQuant memory. No stored memory was read.",
-          }));
-          return;
-        }
-        json(response, 200, completion({
-          role: "assistant",
-          content: "You denied the local action. Nothing was read or run.",
-        }));
+        json(response, 400, { error: { message: "invalid JSON", type: "invalid_request" } });
         return;
       }
-      if (result.output?.type === "memory_remembered") {
-        const memory = result.output.memory ?? {};
-        json(response, 200, completion({
-          role: "assistant",
-          content: `CrowQuant stored memory ${memory.id}: ${JSON.stringify(memory.text)} (${memory.originalBytes} original bytes to ${memory.compressedBytes} compressed bytes using ${memory.algorithm}).`,
-        }));
-        return;
-      }
-      if (result.output?.type === "memory_search") {
-        const results = Array.isArray(result.output.results) ? result.output.results : [];
-        const top = results[0];
-        const content = top
-          ? `CrowQuant search ${JSON.stringify(result.output.query)} returned ${results.length} result(s). Top result ${top.id}: ${JSON.stringify(top.text)} with score ${top.score}.`
-          : `CrowQuant search ${JSON.stringify(result.output.query)} returned 0 results.`;
-        json(response, 200, completion({ role: "assistant", content }));
-        return;
-      }
-      if (result.output?.type === "directory_listing" && hasTool(body, "read_text_file")) {
-        const selected = result.output.entries?.find((entry) => /\.txt$/i.test(String(entry?.name)))?.path;
-        if (selected) {
-          json(response, 200, completion({
-            role: "assistant",
-            content: null,
-            tool_calls: [{
-              id: "call-read-approved-file",
-              type: "function",
-              function: { name: "read_text_file", arguments: JSON.stringify({ path: selected }) },
-            }],
-          }, { finish_reason: "tool_calls" }));
-          return;
-        }
-      }
-      if (result.output?.type === "text_file") {
-        json(response, 200, completion({
-          role: "assistant",
-          content: `I read the approved file ${result.output.path}. Its actual contents were: ${result.output.content}`,
-        }));
-        return;
-      }
-      json(response, 200, completion({ role: "assistant", content: "The approved local action completed." }));
-      return;
-    }
 
-    const content = String(latest.content ?? "");
-    if (content.trim().toUpperCase() === "CANCEL FAST") {
-      setTimeout(() => {
-        if (!response.destroyed) json(response, 200, completion({ role: "assistant", content: "Delayed acceptance result" }));
-      }, 15000);
-      return;
-    }
-    const memoryScenario = memoryScenarios[content.trim().toUpperCase()];
-    if (memoryScenario) {
-      if (!hasTool(body, memoryScenario.name)) {
+      if (request.url === "/v1/embeddings") {
+        const texts = Array.isArray(body.input) ? body.input : [body.input];
+        if (!texts.length || texts.length > 8 || texts.some(text => typeof text !== "string")) {
+          json(response, 400, { error: "invalid embedding batch" });
+          return;
+        }
+        json(response, 200, {
+          model: body.model,
+          data: texts.map((text, index) => ({ index, embedding:
+            /car|vehicle|automobile/i.test(text) ? [1, 0, 0] :
+            /qubit|quantum|phase|coherence/i.test(text) ? [0, 1, 0] : [0, 0, 1]
+          })),
+        });
+        return;
+      }
+
+      const messages = Array.isArray(body.messages) ? body.messages : [];
+      const latest = messages.at(-1) ?? {};
+      if (latest.role === "tool") {
+        let result = {};
+        try {
+          result = JSON.parse(String(latest.content ?? "{}"));
+        } catch {
+          result = {};
+        }
+        if (latest.tool_call_id === "call-packaged-search-deny") {
+          if (result.state !== "denied" || raw.includes(retainedNote)) {
+            memoryEvidence.violations++;
+            json(response, 500, { error: { message: "Denied search disclosed retained data or ran without denial" } });
+            return;
+          }
+          memoryEvidence.deniedWithoutDisclosure++;
+        }
+        if (latest.tool_call_id === "call-packaged-search-approve") {
+          const hit = result.output?.results?.find?.(item => item.text === retainedNote);
+          const provenance = hit?.provenance;
+          if (result.state !== "executed" || result.output?.type !== "memory_search" ||
+              result.output.query !== "cobalt" || !provenance?.sourceId || !provenance.originId || hit.id !== provenance.originId ||
+              !["user_note", "legacy_crowquant"].includes(provenance.sourceKind) || provenance.historicalContext !== true) {
+            memoryEvidence.violations++;
+            json(response, 500, { error: { message: "Approved search did not supply the source-bound retained note" } });
+            return;
+          }
+          memoryEvidence.approvedSources.push({ id: hit.id, ...provenance });
+        }
+        if (result.state === "denied") {
+          if (latest.name === "remember_memory") {
+            json(response, 200, completion({
+              role: "assistant",
+              content: "You denied storing that CrowQuant memory. Nothing was stored.",
+            }));
+            return;
+          }
+          if (latest.name === "search_memory") {
+            json(response, 200, completion({
+              role: "assistant",
+              content: "You denied searching CrowQuant memory. No stored memory was read.",
+            }));
+            return;
+          }
+          json(response, 200, completion({
+            role: "assistant",
+            content: "You denied the local action. Nothing was read or run.",
+          }));
+          return;
+        }
+        if (result.output?.type === "memory_remembered") {
+          const memory = result.output.memory ?? {};
+          json(response, 200, completion({
+            role: "assistant",
+            content: `CrowQuant stored memory ${memory.id}: ${JSON.stringify(memory.text)} (${memory.originalBytes} original bytes to ${memory.compressedBytes} compressed bytes using ${memory.algorithm}).`,
+          }));
+          return;
+        }
+        if (result.output?.type === "memory_search") {
+          const results = Array.isArray(result.output.results) ? result.output.results : [];
+          const top = results[0];
+          const content = top
+            ? `CrowQuant search ${JSON.stringify(result.output.query)} returned ${results.length} result(s). Top result ${top.id}: ${JSON.stringify(top.text)} with score ${top.score}.`
+            : `CrowQuant search ${JSON.stringify(result.output.query)} returned 0 results.`;
+          json(response, 200, completion({ role: "assistant", content }));
+          return;
+        }
+        if (result.output?.type === "directory_listing" && hasTool(body, "read_text_file")) {
+          const selected = result.output.entries?.find((entry) => /\.txt$/i.test(String(entry?.name)))?.path;
+          if (selected) {
+            json(response, 200, completion({
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call-read-approved-file",
+                type: "function",
+                function: { name: "read_text_file", arguments: JSON.stringify({ path: selected }) },
+              }],
+            }, { finish_reason: "tool_calls" }));
+            return;
+          }
+        }
+        if (result.output?.type === "text_file") {
+          json(response, 200, completion({
+            role: "assistant",
+            content: `I read the approved file ${result.output.path}. Its actual contents were: ${result.output.content}`,
+          }));
+          return;
+        }
+        json(response, 200, completion({ role: "assistant", content: "The approved local action completed." }));
+        return;
+      }
+
+      const content = String(latest.content ?? "");
+      if (content.trim().toUpperCase() === "CANCEL FAST") {
+        setTimeout(() => {
+          if (!response.destroyed) json(response, 200, completion({ role: "assistant", content: "Delayed acceptance result" }));
+        }, 15000);
+        return;
+      }
+      const memoryScenario = memoryScenarios[content.trim().toUpperCase()];
+      if (memoryScenario) {
+        if (memoryScenario.callId.startsWith("call-packaged-search-") && raw.includes(retainedNote)) {
+          memoryEvidence.violations++;
+          json(response, 500, { error: { message: "Memory proposal received retained text before approval" } });
+          return;
+        }
+        if (!hasTool(body, memoryScenario.name)) {
+          json(response, 200, completion({
+            role: "assistant",
+            content: `Acceptance failure: ${memoryScenario.name} was not advertised by CrowClaw.`,
+          }));
+          return;
+        }
+        json(response, 200, toolCall(
+          memoryScenario.callId,
+          memoryScenario.name,
+          memoryScenario.arguments,
+        ));
+        return;
+      }
+      if (/which file did i approve|what was it about/i.test(content)) {
+        const history = JSON.stringify(messages);
+        const file = history.match(/([^"\\/]+\.txt)/i)?.[1] ?? "the approved text file";
         json(response, 200, completion({
           role: "assistant",
-          content: `Acceptance failure: ${memoryScenario.name} was not advertised by CrowClaw.`,
+          content: `You approved ${file}. I retained the conversation and its approved-action result after restart.`,
         }));
         return;
       }
-      json(response, 200, toolCall(
-        memoryScenario.callId,
-        memoryScenario.name,
-        memoryScenario.arguments,
-      ));
-      return;
-    }
-    if (/which file did i approve|what was it about/i.test(content)) {
-      const history = JSON.stringify(messages);
-      const file = history.match(/([^"\\/]+\.txt)/i)?.[1] ?? "the approved text file";
+      const pathMatch = content.match(/\[path:(.+?)\]/i);
+      const selectedPath = pathMatch?.[1]?.trim() ?? ".";
+
+      if (/inspect|list/i.test(content) && hasTool(body, "list_directory")) {
+        json(response, 200, completion({
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call-list-directory",
+            type: "function",
+            function: { name: "list_directory", arguments: JSON.stringify({ path: selectedPath }) },
+          }],
+        }, { finish_reason: "tool_calls" }));
+        return;
+      }
+
+      if (/read|summari[sz]e/i.test(content) && hasTool(body, "read_text_file")) {
+        json(response, 200, completion({
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call-read-text-file",
+            type: "function",
+            function: { name: "read_text_file", arguments: JSON.stringify({ path: selectedPath }) },
+          }],
+        }, { finish_reason: "tool_calls" }));
+        return;
+      }
+
       json(response, 200, completion({
         role: "assistant",
-        content: `You approved ${file}. I retained the conversation and its approved-action result after restart.`,
+        content: `CrowClaw acceptance response: ${content || "ready"}`,
       }));
-      return;
-    }
-    const pathMatch = content.match(/\[path:(.+?)\]/i);
-    const selectedPath = pathMatch?.[1]?.trim() ?? ".";
-
-    if (/inspect|list/i.test(content) && hasTool(body, "list_directory")) {
-      json(response, 200, completion({
-        role: "assistant",
-        content: null,
-        tool_calls: [{
-          id: "call-list-directory",
-          type: "function",
-          function: { name: "list_directory", arguments: JSON.stringify({ path: selectedPath }) },
-        }],
-      }, { finish_reason: "tool_calls" }));
-      return;
-    }
-
-    if (/read|summari[sz]e/i.test(content) && hasTool(body, "read_text_file")) {
-      json(response, 200, completion({
-        role: "assistant",
-        content: null,
-        tool_calls: [{
-          id: "call-read-text-file",
-          type: "function",
-          function: { name: "read_text_file", arguments: JSON.stringify({ path: selectedPath }) },
-        }],
-      }, { finish_reason: "tool_calls" }));
-      return;
-    }
-
-    json(response, 200, completion({
-      role: "assistant",
-      content: `CrowClaw acceptance response: ${content || "ready"}`,
-    }));
+    });
   });
-});
+  return server;
+}
 
-server.listen(port, host, () => {
-  process.stdout.write(JSON.stringify({ ready: true, host, port, model }) + "\n");
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createModelFixture();
+  server.listen(port, host, () => {
+    process.stdout.write(JSON.stringify({ ready: true, host, port: server.address().port, model }) + "\n");
+  });
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => server.close(() => process.exit(0)));
+  }
 }
