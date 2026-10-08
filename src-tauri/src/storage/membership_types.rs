@@ -39,6 +39,9 @@ pub struct MembershipAccount {
     pub identity: MembershipIdentity,
     pub has_credentials: bool,
     pub credential_version: u32,
+    // Native session invalidation is distinct from rotating credential storage.
+    #[serde(skip)]
+    pub(crate) session_version: u32,
     pub catalog: Option<MembershipCatalog>,
     pub selection: Option<MembershipSelection>,
     pub created_at_ms: i64,

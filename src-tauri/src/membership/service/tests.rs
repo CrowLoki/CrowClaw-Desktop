@@ -38,6 +38,277 @@ async fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
     stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 
+fn expiring_service(
+    storage: Arc<Storage>,
+    endpoint: &str,
+) -> (Arc<MembershipService>, MembershipAccount) {
+    let account = saved_account(&storage);
+    let (record, version) = storage
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    let mut credentials = open_credentials(&record).unwrap();
+    credentials.access_expires_at_ms = 1;
+    let account = storage
+        .membership_replace_credentials(
+            &account.id,
+            version,
+            &protect_credentials(&record.identity, &credentials).unwrap(),
+        )
+        .unwrap();
+    let mut service = MembershipService::new(storage).unwrap();
+    service.test_discovery = Some(Discovery {
+        issuer: protocol::ISSUER.into(),
+        authorization_endpoint: protocol::AUTHORIZE.into(),
+        token_endpoint: format!("{endpoint}/token"),
+        jwks_uri: format!("{endpoint}/keys"),
+        revocation_endpoint: format!("{endpoint}/revoke"),
+        id_token_signing_alg_values_supported: vec!["RS256".into()],
+    });
+    (Arc::new(service), account)
+}
+
+#[test]
+fn reconnect_in_another_instance_replaces_a_cancelled_local_session_handle() {
+    let directory = TempDir::new().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let account = saved_account(&storage);
+    let service = MembershipService::new(storage.clone()).unwrap();
+    let old = service.session_cancellation(&account.id).unwrap();
+    old.cancel();
+    let second = Storage::open(directory.path()).unwrap();
+    let (record, version) = second
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    let cleared = second
+        .membership_clear_credentials(&account.id, version)
+        .unwrap();
+    second
+        .membership_reconnect(&account.id, cleared.credential_version, "Personal", &record)
+        .unwrap();
+    let current = service.session_cancellation(&account.id).unwrap();
+    assert!(!current.is_cancelled());
+    assert!(old.is_cancelled());
+    current.cancel();
+    assert!(service
+        .session_cancellation(&account.id)
+        .unwrap()
+        .is_cancelled());
+}
+
+#[tokio::test]
+async fn cancelled_request_does_not_discard_an_inflight_rotating_token() {
+    let directory = TempDir::new().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (service, account) = expiring_service(storage.clone(), &endpoint);
+    let (seen_tx, seen) = tokio::sync::oneshot::channel();
+    let (release_tx, release) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_headers(&mut stream).await.unwrap();
+        seen_tx.send(()).unwrap();
+        release.await.unwrap();
+        write_response(&mut stream, 200, r#"{"access_token":"synthetic-next-access","refresh_token":"synthetic-next-refresh","token_type":"Bearer","expires_in":3600}"#).await;
+    });
+    let caller_service = service.clone();
+    let id = account.id.clone();
+    let caller = tokio::spawn(async move {
+        caller_service
+            .credentials(&id, &CancellationToken::new())
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), seen)
+        .await
+        .unwrap()
+        .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    release_tx.send(()).unwrap();
+    server.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let (record, version) = storage
+                .membership_protected_credentials(&account.id)
+                .unwrap();
+            if version > account.credential_version {
+                assert_eq!(
+                    open_credentials(&record).unwrap().refresh_token,
+                    "synthetic-next-refresh"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("The shared renewal must persist after its requesting task is dropped");
+    assert_eq!(
+        storage
+            .membership_account(&account.id)
+            .unwrap()
+            .session_version,
+        account.session_version
+    );
+    let (credentials, _) = service
+        .credentials(&account.id, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(credentials.access_token, "synthetic-next-access");
+}
+
+#[tokio::test]
+async fn signout_waits_for_rotation_and_revokes_the_replacement_token() {
+    let directory = TempDir::new().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (service, account) = expiring_service(storage.clone(), &endpoint);
+    let (seen_tx, seen) = tokio::sync::oneshot::channel();
+    let (release_tx, release) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut renewal, _) = listener.accept().await.unwrap();
+        read_headers(&mut renewal).await.unwrap();
+        seen_tx.send(()).unwrap();
+        release.await.unwrap();
+        write_response(&mut renewal, 200, r#"{"access_token":"synthetic-next-access","refresh_token":"synthetic-next-refresh","token_type":"Bearer","expires_in":3600}"#).await;
+        let (mut revocation, _) = listener.accept().await.unwrap();
+        let mut bytes = read_headers(&mut revocation).await.unwrap();
+        let end = bytes.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
+        let length = std::str::from_utf8(&bytes[..end])
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap();
+        while bytes.len() < end + length {
+            let mut more = [0; 1024];
+            let count = revocation.read(&mut more).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&more[..count]);
+        }
+        assert!(std::str::from_utf8(&bytes[end..])
+            .unwrap()
+            .contains("token=synthetic-next-refresh"));
+        write_response(&mut revocation, 200, "").await;
+    });
+    let renewal_service = service.clone();
+    let id = account.id.clone();
+    let session = service.session_cancellation(&id).unwrap();
+    let renewal = tokio::spawn(async move { renewal_service.credentials(&id, &session).await });
+    tokio::time::timeout(Duration::from_secs(3), seen)
+        .await
+        .unwrap()
+        .unwrap();
+    let signout_service = service.clone();
+    let id = account.id.clone();
+    let signout = tokio::spawn(async move { signout_service.sign_out(&id).await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !service
+            .session_cancellation(&account.id)
+            .unwrap()
+            .is_cancelled()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    release_tx.send(()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(3), signout)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(result.remote_revoked);
+    assert!(!result.account.has_credentials);
+    assert!(result.account.session_version > account.session_version);
+    renewal.await.unwrap().unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn signout_keeps_ownership_past_the_normal_account_request_deadline() {
+    let directory = TempDir::new().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let account = saved_account(&storage);
+    let service = Arc::new(MembershipService::new(storage.clone()).unwrap());
+    let session = service.session_cancellation(&account.id).unwrap();
+    let lock = service
+        .account_lock(Some(&account.id), &CancellationToken::new())
+        .await
+        .unwrap();
+    let signing_out = service.clone();
+    let id = account.id.clone();
+    let mut operation = tokio::spawn(async move { signing_out.sign_out(&id).await });
+    session.cancelled().await;
+    // A legitimate token request plus key lookup can outlast the ordinary
+    // 30-second acquisition limit. Sign-out must retain cleanup ownership.
+    let premature = tokio::time::timeout(Duration::from_secs(31), &mut operation).await;
+    storage
+        .membership_clear_credentials(&account.id, account.credential_version)
+        .unwrap();
+    drop(lock);
+    assert!(
+        premature.is_err(),
+        "Sign-out abandoned cleanup while the account owner was still working"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(3), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!result.account.has_credentials);
+}
+
+#[tokio::test]
+async fn dropped_signout_caller_does_not_abandon_revocation_and_local_clear() {
+    let directory = TempDir::new().unwrap();
+    let storage = Arc::new(Storage::open(directory.path()).unwrap());
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (service, account) = expiring_service(storage.clone(), &endpoint);
+    let (seen_tx, seen) = tokio::sync::oneshot::channel();
+    let (release_tx, release) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_headers(&mut stream).await.unwrap();
+        seen_tx.send(()).unwrap();
+        release.await.unwrap();
+        write_response(&mut stream, 200, "").await;
+    });
+    let id = account.id.clone();
+    let caller = tokio::spawn(async move { service.sign_out(&id).await });
+    tokio::time::timeout(Duration::from_secs(3), seen)
+        .await
+        .unwrap()
+        .unwrap();
+    caller.abort();
+    assert!(caller.await.is_err());
+    release_tx.send(()).unwrap();
+    server.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while storage
+            .membership_account(&account.id)
+            .unwrap()
+            .has_credentials
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Sign-out must finish clearing local credentials after losing its caller");
+}
+
 #[tokio::test]
 async fn catalog_refresh_is_serialized_across_instances_through_publication() {
     let directory = TempDir::new().unwrap();

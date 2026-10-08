@@ -1,6 +1,52 @@
 use super::*;
 use crate::agent::ToolDefinition;
 
+#[test]
+fn rotation_preserves_live_session_but_reconnect_and_signout_invalidate_it() {
+    use crate::membership::tests::{add, protected};
+    let directory = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(crate::storage::Storage::open(directory.path()).unwrap());
+    let account = add(&storage, "existing-client", "Personal");
+    let service = Arc::new(MembershipService::new(storage.clone()).unwrap());
+    let selected = MembershipSelection {
+        account_id: account.id.clone(),
+        model: "offered-model".into(),
+        reasoning_effort: None,
+    };
+    let running = MembershipProvider::new(service.clone(), selected.clone()).unwrap();
+    running.check_connection().unwrap();
+    let rotated = storage
+        .membership_replace_credentials(
+            &account.id,
+            account.credential_version,
+            &protected(&account.identity, "ROTATED"),
+        )
+        .unwrap();
+    assert_ne!(rotated.credential_version, account.credential_version);
+    running.check_connection().unwrap();
+    let reconnected = storage
+        .membership_reconnect(
+            &account.id,
+            rotated.credential_version,
+            "Personal",
+            &protected(&account.identity, "RECONNECTED"),
+        )
+        .unwrap();
+    assert!(matches!(
+        running.check_connection(),
+        Err(ProviderError::Cancelled)
+    ));
+    let next = MembershipProvider::new(service, selected).unwrap();
+    next.check_connection().unwrap();
+    storage
+        .membership_clear_credentials(&account.id, reconnected.credential_version)
+        .unwrap();
+    assert!(matches!(
+        next.check_connection(),
+        Err(ProviderError::Cancelled)
+    ));
+}
+
 fn selection() -> MembershipSelection {
     MembershipSelection {
         account_id: "synthetic-account".into(),

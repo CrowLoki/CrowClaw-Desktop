@@ -31,10 +31,13 @@ fn credentials(identity: &MembershipIdentity, generation: &str) -> MembershipCre
         access_expires_at_ms: 1_900_000_000_000,
     }
 }
-fn protected(identity: &MembershipIdentity, generation: &str) -> ProtectedMembershipRecord {
+pub(super) fn protected(
+    identity: &MembershipIdentity,
+    generation: &str,
+) -> ProtectedMembershipRecord {
     protect_credentials(identity, &credentials(identity, generation)).unwrap()
 }
-fn add(storage: &Storage, client: &str, label: &str) -> MembershipAccount {
+pub(super) fn add(storage: &Storage, client: &str, label: &str) -> MembershipAccount {
     let identity = identity(storage, client);
     storage
         .membership_add_account(label, &protected(&identity, client))
@@ -507,7 +510,10 @@ fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
         .unwrap();
     drop(connection);
     let upgraded = Storage::open(directory.path()).unwrap();
-    assert_eq!(upgraded.schema_version().unwrap(), 7);
+    assert_eq!(
+        upgraded.schema_version().unwrap(),
+        crate::storage::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(upgraded.export_all().unwrap().settings, before);
     assert!(upgraded.membership_accounts().unwrap().is_empty());
     assert!(upgraded.membership_host_id().is_ok());
@@ -534,4 +540,37 @@ fn invalid_identity_scope_and_cross_registration_tokens_are_refused_before_stora
     identity.issuer = "https://auth.openai.com".into();
     identity.provider = "claude".into();
     assert!(protect_credentials(&identity, &credentials(&identity, "ONE")).is_err());
+}
+
+#[test]
+fn schema_seven_upgrade_preserves_registration_and_protected_credentials() {
+    let directory = TempDir::new().unwrap();
+    let storage = Storage::open(directory.path()).unwrap();
+    let account = add(&storage, "existing-client", "Existing account");
+    let (before, version) = storage
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    let path = storage.close().unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
+        )
+        .unwrap();
+    drop(connection);
+    let upgraded = Storage::open(directory.path()).unwrap();
+    let after = upgraded.membership_account(&account.id).unwrap();
+    let (record, after_version) = upgraded
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    assert_eq!(upgraded.schema_version().unwrap(), 8);
+    assert_eq!(after.label, account.label);
+    assert_eq!(after.identity, account.identity);
+    assert_eq!(after.session_version, 1);
+    assert_eq!(after_version, version);
+    assert_eq!(record.ciphertext, before.ciphertext);
+    assert_eq!(
+        open_credentials(&record).unwrap().refresh_token,
+        "SYNTHETIC-REFRESH-existing-client"
+    );
 }

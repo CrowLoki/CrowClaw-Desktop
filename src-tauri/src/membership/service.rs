@@ -39,11 +39,17 @@ struct PendingRequest {
     complete: bool,
     account_id: Option<String>,
 }
+struct AccountSession {
+    version: u32,
+    cancellation: CancellationToken,
+}
 pub struct MembershipService {
     pub(crate) storage: Arc<Storage>,
     pub(crate) client: Client,
     pending: Mutex<HashMap<String, PendingRequest>>,
-    sessions: Mutex<HashMap<String, CancellationToken>>,
+    sessions: Mutex<HashMap<String, AccountSession>>,
+    #[cfg(test)]
+    test_discovery: Option<Discovery>,
 }
 
 impl MembershipService {
@@ -59,6 +65,8 @@ impl MembershipService {
             client,
             pending: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            test_discovery: None,
         })
     }
 
@@ -222,9 +230,15 @@ impl MembershipService {
                     .sessions
                     .lock()
                     .map_err(|_| "Account request state is unavailable")?
-                    .insert(account.id.clone(), CancellationToken::new())
+                    .insert(
+                        account.id.clone(),
+                        AccountSession {
+                            version: account.session_version,
+                            cancellation: CancellationToken::new(),
+                        },
+                    )
                 {
-                    previous.cancel();
+                    previous.cancellation.cancel();
                 }
                 return Ok(account);
             }
@@ -235,7 +249,15 @@ impl MembershipService {
         }
     }
 
-    pub async fn sign_out(&self, id: &str) -> Result<SignOutResult, String> {
+    pub async fn sign_out(self: &Arc<Self>, id: &str) -> Result<SignOutResult, String> {
+        let service = Arc::clone(self);
+        let id = id.to_owned();
+        tokio::spawn(async move { service.finish_sign_out(&id).await })
+            .await
+            .map_err(|_| "Account sign-out did not complete".to_string())?
+    }
+
+    async fn finish_sign_out(&self, id: &str) -> Result<SignOutResult, String> {
         Uuid::parse_str(id).map_err(|_| "Account identifier is invalid")?;
         {
             let pending = self
@@ -255,10 +277,15 @@ impl MembershipService {
             .map_err(|_| "Account request state is unavailable")?
             .get(id)
         {
-            token.cancel();
+            token.cancellation.cancel();
         }
         let cancellation = CancellationToken::new();
-        let _lock = self.account_lock(Some(id), &cancellation).await?;
+        // Cleanup owns completion, not the ordinary request acquisition budget.
+        // In-flight account operations retain their own bounded network/auth
+        // lifetimes. Revoke and clear the latest credentials after they finish.
+        let _lock = self
+            .acquire_account_lock(Some(id), &cancellation, None)
+            .await?;
         let account = self
             .storage
             .membership_account(id)
@@ -353,12 +380,24 @@ impl MembershipService {
     }
 
     pub(crate) async fn credentials(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         cancellation: &CancellationToken,
     ) -> Result<(MembershipCredentials, u32), String> {
-        let _lock = self.account_lock(Some(id), cancellation).await?;
-        self.credentials_locked(id, cancellation).await
+        if cancellation.is_cancelled() {
+            return Err("Account request cancelled".into());
+        }
+        let service = Arc::clone(self);
+        let id = id.to_owned();
+        let cancellation = cancellation.clone();
+        // Dropping the requesting task detaches this owner; it must not discard
+        // a replacement token after the issuer has consumed the previous one.
+        tokio::spawn(async move {
+            let _lock = service.account_lock(Some(&id), &cancellation).await?;
+            service.credentials_locked(&id, &cancellation).await
+        })
+        .await
+        .map_err(|_| "Account credential maintenance did not complete".to_string())?
     }
 
     // The caller holds the account's cross-process lock through publication.
@@ -376,6 +415,13 @@ impl MembershipService {
             return Ok((saved, version));
         }
         let discovery = self.discovery(cancellation).await?;
+        if cancellation.is_cancelled() {
+            return Err("Account request cancelled".into());
+        }
+        // Once renewal starts, task/session cancellation cannot undo the remote
+        // token rotation. Finish validation and persistence while holding the
+        // account lock; sign-out then revokes the newly saved token.
+        let renewal = CancellationToken::new();
         let reply: TokenReply = self
             .json(
                 self.client.post(&discovery.token_endpoint).form(&[
@@ -384,19 +430,16 @@ impl MembershipService {
                     ("refresh_token", saved.refresh_token.as_str()),
                     ("resource", protocol::RESOURCE),
                 ]),
-                cancellation,
+                &renewal,
             )
             .await?;
         if let Some(token) = reply.id_token.as_deref() {
             let keys: JwkSet = self
-                .json(self.client.get(&discovery.jwks_uri), cancellation)
+                .json(self.client.get(&discovery.jwks_uri), &renewal)
                 .await?;
             protocol::verify_refreshed_identity(token, &record.identity, &keys)?;
         }
         let next = protocol::credentials_from_reply(&record.identity, reply, Some(&saved))?;
-        if cancellation.is_cancelled() {
-            return Err("Account request cancelled".into());
-        }
         let updated = self
             .storage
             .membership_replace_credentials(
@@ -408,7 +451,7 @@ impl MembershipService {
         Ok((next, updated.credential_version))
     }
 
-    pub async fn refresh_catalog(&self, id: &str) -> Result<MembershipAccount, String> {
+    pub async fn refresh_catalog(self: &Arc<Self>, id: &str) -> Result<MembershipAccount, String> {
         self.refresh_catalog_request(
             id,
             self.client.get(format!("{}/models", protocol::RESOURCE)),
@@ -417,13 +460,33 @@ impl MembershipService {
     }
 
     async fn refresh_catalog_request(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: RequestBuilder,
     ) -> Result<MembershipAccount, String> {
         let cancellation = self.session_cancellation(id)?;
+        let service = Arc::clone(self);
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            service
+                .refresh_catalog_locked(&id, request, &cancellation)
+                .await
+        })
+        .await
+        .map_err(|_| "Account catalog maintenance did not complete".to_string())?
+    }
+
+    async fn refresh_catalog_locked(
+        &self,
+        id: &str,
+        request: RequestBuilder,
+        cancellation: &CancellationToken,
+    ) -> Result<MembershipAccount, String> {
         let _lock = self.account_lock(Some(id), &cancellation).await?;
         let (credentials, version) = self.credentials_locked(id, &cancellation).await?;
+        if cancellation.is_cancelled() {
+            return Err("Account request cancelled".into());
+        }
         let raw: serde_json::Value = self
             .json(
                 request.bearer_auth(&credentials.access_token),
@@ -445,13 +508,42 @@ impl MembershipService {
             .sessions
             .lock()
             .map_err(|_| "Account request state is unavailable")?;
-        Ok(sessions.entry(id.into()).or_default().clone())
+        let account = self
+            .storage
+            .membership_account(id)
+            .map_err(|e| e.to_string())?;
+        let session = sessions.entry(id.into()).or_insert_with(|| AccountSession {
+            version: account.session_version,
+            cancellation: CancellationToken::new(),
+        });
+        if session.version != account.session_version {
+            session.cancellation.cancel();
+            *session = AccountSession {
+                version: account.session_version,
+                cancellation: CancellationToken::new(),
+            };
+        }
+        Ok(session.cancellation.clone())
     }
 
     async fn account_lock(
         &self,
         id: Option<&str>,
         cancellation: &CancellationToken,
+    ) -> Result<File, String> {
+        self.acquire_account_lock(
+            id,
+            cancellation,
+            Some(tokio::time::Instant::now() + Duration::from_secs(30)),
+        )
+        .await
+    }
+
+    async fn acquire_account_lock(
+        &self,
+        id: Option<&str>,
+        cancellation: &CancellationToken,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<File, String> {
         if let Some(id) = id {
             Uuid::parse_str(id).map_err(|_| "Account identifier is invalid")?;
@@ -469,8 +561,10 @@ impl MembershipService {
             .truncate(false)
             .open(path)
             .map_err(|_| "Could not open this account's session lock")?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
+            if cancellation.is_cancelled() {
+                return Err("Account request cancelled".into());
+            }
             match file.try_lock() {
                 Ok(()) => return Ok(file),
                 Err(TryLockError::WouldBlock) => {}
@@ -480,13 +574,22 @@ impl MembershipService {
             }
             tokio::select! {
                 _ = cancellation.cancelled() => return Err("Account request cancelled".into()),
-                _ = tokio::time::sleep_until(deadline) => return Err("Another operation is using this account; try again after it finishes".into()),
+                _ = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => return Err("Another operation is using this account; try again after it finishes".into()),
                 _ = tokio::time::sleep(Duration::from_millis(25)) => {},
             }
         }
     }
 
     async fn discovery(&self, cancellation: &CancellationToken) -> Result<Discovery, String> {
+        #[cfg(test)]
+        if let Some(document) = &self.test_discovery {
+            return Ok(document.clone());
+        }
         let document: Discovery = self
             .json(self.client.get(protocol::DISCOVERY), cancellation)
             .await?;
@@ -542,7 +645,7 @@ impl Drop for SignInGuard<'_> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Discovery {
     issuer: String,
     authorization_endpoint: String,

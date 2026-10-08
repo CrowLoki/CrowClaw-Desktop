@@ -16,6 +16,7 @@ pub struct MembershipProvider {
     service: Arc<MembershipService>,
     selection: MembershipSelection,
     session: CancellationToken,
+    session_version: u32,
 }
 impl MembershipProvider {
     pub fn new(
@@ -34,15 +35,16 @@ impl MembershipProvider {
             service,
             selection,
             session,
+            session_version: account.session_version,
         })
     }
-    fn check_connection(&self, version: u32) -> Result<(), ProviderError> {
+    fn check_connection(&self) -> Result<(), ProviderError> {
         let account = self
             .service
             .storage
             .membership_account(&self.selection.account_id)
             .map_err(|_| invalid("Saved account is unavailable"))?;
-        if !account.has_credentials || account.credential_version != version {
+        if !account.has_credentials || account.session_version != self.session_version {
             return Err(ProviderError::Cancelled);
         }
         Ok(())
@@ -56,12 +58,12 @@ impl MembershipProvider {
             return Err(ProviderError::Cancelled);
         }
         let payload = request_body(&request, &self.selection)?;
-        let (credentials, version) = tokio::select! {
+        let (credentials, _) = tokio::select! {
             _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
             _ = self.session.cancelled() => return Err(ProviderError::Cancelled),
             result = self.service.credentials(&self.selection.account_id,&self.session) => result.map_err(|message|ProviderError::InvalidConfiguration{message})?,
         };
-        self.check_connection(version)?;
+        self.check_connection()?;
         let request = self
             .service
             .client
@@ -76,7 +78,7 @@ impl MembershipProvider {
                 biased;
                 _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
                 _ = self.session.cancelled() => return Err(ProviderError::Cancelled),
-                _ = check.tick() => self.check_connection(version)?,
+                _ = check.tick() => self.check_connection()?,
                 result = &mut response => break result.map_err(|message|ProviderError::Transport{message})?,
             }
         };
@@ -107,10 +109,10 @@ impl MembershipProvider {
                 biased;
                 _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
                 _ = self.session.cancelled() => return Err(ProviderError::Cancelled),
-                _ = check.tick() => self.check_connection(version)?,
+                _ = check.tick() => self.check_connection()?,
                 result = response.chunk() => match result.map_err(|_|ProviderError::Transport{message:"ChatGPT response was interrupted".into()})? {
-                    Some(bytes) => if let Some(completion) = decoder.push(&bytes)? { self.check_connection(version)?; return Ok(completion); },
-                    None => return decoder.finish(),
+                    Some(bytes) => if let Some(completion) = decoder.push(&bytes)? { self.check_connection()?; return Ok(completion); },
+                    None => { self.check_connection()?; return decoder.finish(); },
                 }
             }
         }

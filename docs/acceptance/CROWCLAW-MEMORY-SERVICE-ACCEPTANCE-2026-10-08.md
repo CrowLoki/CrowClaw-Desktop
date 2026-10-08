@@ -511,3 +511,31 @@ newer combined candidate. Completed account authorization/token exchange, live
 account catalog and inference, reconnect, quota and remote/local disconnect
 journeys remain unverified. Claude integration, full packaged journeys and the
 wider standalone roadmap remain outstanding. No public release is claimed.
+
+### Reviewed session lifecycle follow-up
+
+Independent review identified cancellation losing a rotated refresh token and
+ordinary rotation cancelling healthy responses. The correction gives credential
+maintenance an owned lifetime and separates durable session invalidation from
+credential replacement in schema 8. Reconnect/sign-out invalidate the old session;
+routine renewal does not. Session handles synchronize after another instance
+reconnects. Sign-out retains cleanup ownership until the current account operation
+finishes, then revokes the latest token and clears locally. Network/auth timeouts
+were not increased. A real lock-contention regression failed at the earlier
+30-second deadline and passes with the lock held for 31 seconds. HTTP-barrier
+tests also prove renewal persistence and sign-out cleanup after caller cancellation.
+The reviewer rechecked the three findings and reported no remaining defect in
+that bounded cleanup review.
+
+The updated normal Rust suite passes 172 tests: 98 library, 23 agent-runtime,
+10 Evolution, 24 memory-foundation, 10 semantic-memory and 7 storage. Rust format
+checking and the native release build pass; the unchanged frontend has its
+65-test passing result above. Latest native executable SHA-256:
+`6F5A85CBBCF313FB1564E34CAD2775014F322672B8D2595821D9DAB8EF8E9E01`.
+The actual candidate upgraded the existing native test profile from schema 7 to 8.
+Its full Evolution-data digest and opaque host-identity digest remained identical;
+the UI retained revision 2, both model responses and the Neither preference.
+Membership controls were ready, and the candidate closed normally. A separate
+schema-7 regression preserves existing protected credential bytes and registration
+identity through upgrade. This does not replace the live-account and packaged
+acceptance gaps stated above.

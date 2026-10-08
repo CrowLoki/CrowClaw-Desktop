@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -41,9 +41,20 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     if installed_version < 7 {
         migrate_to_v7(&transaction)?;
     }
+    if installed_version < 8 {
+        migrate_to_v8(&transaction)?;
+    }
 
     transaction.commit()?;
 
+    Ok(())
+}
+
+fn migrate_to_v8(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
+        "ALTER TABLE membership_accounts ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1 CHECK(session_version BETWEEN 1 AND 2147483647);",
+    )?;
+    connection.pragma_update(None, "user_version", 8u32)?;
     Ok(())
 }
 

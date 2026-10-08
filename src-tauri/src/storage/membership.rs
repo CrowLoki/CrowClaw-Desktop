@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-const COLUMNS: &str = "id,label,provider,issuer,subject,client_id,host_id,email,credential_blob IS NOT NULL,credential_version,catalog_json,selection_json,created_at_ms,updated_at_ms";
+const COLUMNS: &str = "id,label,provider,issuer,subject,client_id,host_id,email,credential_blob IS NOT NULL,credential_version,catalog_json,selection_json,created_at_ms,updated_at_ms,session_version";
 const MAX_VERSION: u32 = i32::MAX as u32;
 
 impl Storage {
@@ -151,8 +151,13 @@ impl Storage {
                 ));
             }
         }
-        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=?1,credential_version=?2,email=?3,updated_at_ms=?4,label=COALESCE(?7,label) WHERE id=?5 AND credential_version=?6",
-            params![record.ciphertext,next,record.identity.email,now_ms()?,id,expected_version,label])?;
+        let session_version = if label.is_some() {
+            next_version(current.session_version)?
+        } else {
+            current.session_version
+        };
+        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=?1,credential_version=?2,email=?3,updated_at_ms=?4,label=COALESCE(?7,label),session_version=?8 WHERE id=?5 AND credential_version=?6",
+            params![record.ciphertext,next,record.identity.email,now_ms()?,id,expected_version,label,session_version])?;
         require_changed(changed)?;
         let account = account_from(&tx, id)?;
         tx.commit()?;
@@ -169,9 +174,10 @@ impl Storage {
         let next = next_version(expected_version)?;
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        account_from(&tx, id)?;
-        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=NULL,credential_version=?1,catalog_json=NULL,selection_json=NULL,updated_at_ms=?2 WHERE id=?3 AND credential_version=?4",
-            params![next,now_ms()?,id,expected_version])?;
+        let current = account_from(&tx, id)?;
+        let session_version = next_version(current.session_version)?;
+        let changed = tx.execute("UPDATE membership_accounts SET credential_blob=NULL,credential_version=?1,catalog_json=NULL,selection_json=NULL,updated_at_ms=?2,session_version=?5 WHERE id=?3 AND credential_version=?4",
+            params![next,now_ms()?,id,expected_version,session_version])?;
         require_changed(changed)?;
         let account = account_from(&tx, id)?;
         tx.commit()?;
@@ -360,6 +366,7 @@ fn account_row(row: &Row<'_>) -> rusqlite::Result<AccountRow> {
             },
             has_credentials: row.get(8)?,
             credential_version: row.get(9)?,
+            session_version: row.get(14)?,
             catalog: None,
             selection: None,
             created_at_ms: row.get(12)?,
