@@ -110,8 +110,9 @@ profile and the hosted installer lifecycle as already established.
 
 ### Current governed-evolution continuation — 2026-10-08
 
-Memory/CI delivery is merged in PR #3 at `b713bf1`. The active source branch is
-`codex/governed-evolution` in the existing attached checkout. Native schema 6,
+Memory/CI delivery is merged in PR #3 at `b713bf1`. Evolution source is preserved
+at local commit `290e129` on `codex/governed-evolution`; the active stacked branch
+is now `codex/membership-providers` in the same existing attached checkout. Native schema 6,
 terminal-task feedback, manual/model proposals, two-response comparisons, explicit
 Apply/Reject, immutable revisions/restore, new-task guideline injection and
 revision attribution, global TaskCenter cancellation, and export/removal are
@@ -161,6 +162,86 @@ and [models/inference](https://developers.openai.com/siwc/token-sharing-open-sou
 The other project's released harness evidence is provenance, not CrowClaw's
 implementation or live acceptance. CrowClaw remains the desktop exception; phone
 and hardware work stays with those independent projects.
+
+### Current account-storage continuation — 2026-10-08
+
+The original linked failure in run `37660605623`, fresh job `112931795647`, was
+rechecked through GitHub's job log: WebView's acceptance endpoint on port 9227
+never became ready. Later run `37701777105` passes build, fresh install and Alpha 3
+upgrade, with zero annotations on all three jobs. PR #3 is confirmed merged at
+`b713bf181a769a921493298fa66ca25433566152`. The old failed run remains historical
+evidence; it is not a current failing product gate.
+
+Native-only membership groundwork is implemented locally on
+`codex/membership-providers`, stacked on the preserved Evolution commit. Schema 7
+adds one profile-owned UUIDv4 host identity and separately labelled account/client
+registrations. Windows current-user DPAPI protects token records, with immutable
+provider/issuer/subject/client/host binding; email is display metadata, not a key.
+No raw-token IPC, browser token storage, source credential import, real sign-in or
+provider request was added. Claude token import is explicitly refused; its own
+supported runtime/profile still needs implementation.
+
+SQLite immediate transactions arbitrate host creation and credential generations
+across processes. Compare-and-swap rejects stale replacement/catalog completion,
+including late results after local sign-out. Sign-out retains the registration
+and host mapping while clearing protected tokens and active choices. Catalogs and
+model/effort selections are account-bound. Ordinary token replacement preserves
+that registration's choices; a fresh catalog clears choices no longer offered,
+rather than transferring them to another account. This is a validated native
+storage contract, not a claim that provider catalogs have been fetched live.
+Memory/content exports exclude the membership vault and registrations; explicit
+full data removal clears them. Existing settings/providers remain unchanged.
+
+Fresh verification: `cargo test --locked --lib membership` passes 10 Windows tests,
+including real DPAPI round-trip/tamper/binding, same-email separation, restart,
+cross-install refusal, concurrent replacements, late-result rejection, selection,
+export/privacy, retention and schema-6 upgrade. The affected integration command
+passes 24 memory-foundation, 10 Evolution and 7 storage tests. Frontend tests pass
+40/40 and the production frontend build passes. `git diff --check` passes.
+The native provider functions are deliberately not wired yet and produce dead-code
+warnings in non-test builds; do not suppress these or call membership connected.
+
+A pre-accept review reproduced token replacement unnecessarily clearing an
+account's chosen model/effort. A new regression failed before the change; the
+replacement operation now preserves same-registration choices, while sign-out
+and unavailable-model catalog refresh still clear them. All ten membership tests
+pass after the change, including the formerly failing regression. The post-fix
+integration targets were rerun without the membership name filter: 24 memory,
+10 Evolution and 7 storage tests pass with zero tests filtered out. These are
+focused source checks; they do not replace the still-open full Cargo/network gate.
+
+The native release build completed. An initial manifest check incorrectly assumed
+Tauri had declared DPI/OS compatibility. Direct inspection of the installed
+`tauri-build` 2.6.3 source proves its default manifest contains only Common Controls
+v6, matching the extracted executable manifest. No DPI/compatibility declarations
+were lost, and no new platform declaration was added. The inaccurate build-script
+comment was corrected; verification must compare to the actual Tauri default,
+not an invented requirement. A structure/attribute comparison passes for every
+manifest declaration; the initial literal XML comparison differed only in
+whitespace. Native version resources still report CrowClaw `0.1.0-alpha.4`.
+This is manifest/build evidence, not installed UI acceptance of the current
+Evolution/account candidate. The latest-source native release rebuild passes;
+its extracted manifest again matches the complete current Tauri default. Executable
+SHA-256: `E96F907E09A4D49992955ADB80845C53F8F93663E9F43D05E01BABB6021F62FD`.
+The build reports 17 dead-code warnings from the not-yet-wired native provider
+seams. No installer, account connection, public release or installed-app update
+was performed for this groundwork. It remains on the local stacked source branch;
+the canonical main checkout and its three user-owned dirty paths are unchanged.
+
+Next required provider work: signed OIDC validation and native PKCE/callback flow,
+serialized rotating-token refresh (storage CAS alone does not serialize remote
+refreshes), account-specific catalog/effort parsing, Responses streaming through
+its terminal event, cancellation/quota/revocation handling, the supported Claude
+route, settings UI and real intended-request/restart/disconnect acceptance. The
+official [account/session contract](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
+and [model/inference contract](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+govern those boundaries. No API-key or paid-credit fallback is permitted.
+
+The independent IPv4 transport fault above is still unresolved; normal full Cargo
+and provider/native acceptance are not claimed passing. Crow's specifically
+reserved Npcap update decision has not been answered; no driver update, firewall
+change or test-port substitution was performed. The completed offline groundwork
+does not bypass that repair requirement. The full app goal remains active.
 
 Carry Crow's approved roadmap forward after memory: governed recursive evolution; skills and capability support; CrowNest council/laboratory capabilities; evidence and experiment handling informed by SRH-HQRE; advanced CrowQuant; optional attributed collaborator support. Core installed behavior must operate without donor projects or private state.
 

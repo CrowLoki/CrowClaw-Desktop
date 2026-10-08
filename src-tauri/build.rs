@@ -9,8 +9,9 @@ fn main() {
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
         // tauri-build already links a complete RT_MANIFEST into binary targets.
-        // Keep that resource, including DPI/compatibility settings, instead of
-        // asking LINK to generate a duplicate manifest with the same resource ID.
+        // Keep that resource instead of asking LINK to generate a duplicate
+        // manifest with the same resource ID. The current Tauri default contains
+        // only the Common Controls dependency, not extra DPI/OS declarations.
         println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
     }
 }

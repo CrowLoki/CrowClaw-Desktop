@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -37,6 +37,9 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     }
     if installed_version < 6 {
         migrate_to_v6(&transaction)?;
+    }
+    if installed_version < 7 {
+        migrate_to_v7(&transaction)?;
     }
 
     transaction.commit()?;
@@ -366,5 +369,21 @@ fn migrate_to_v6(connection: &Connection) -> StorageResult<()> {
         CREATE INDEX evolution_evaluations_recent ON evolution_evaluations(created_at_ms DESC,id);
     "#)?;
     connection.pragma_update(None, "user_version", 6u32)?;
+    Ok(())
+}
+
+fn migrate_to_v7(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(r#"
+        CREATE TABLE membership_host (id INTEGER PRIMARY KEY CHECK(id=1),host_id TEXT NOT NULL UNIQUE);
+        CREATE TABLE membership_accounts (
+            id TEXT PRIMARY KEY, provider TEXT NOT NULL CHECK(provider IN ('chatgpt','claude')),
+            label TEXT NOT NULL,issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,
+            email TEXT,host_id TEXT NOT NULL,credential_blob BLOB,
+            credential_version INTEGER NOT NULL DEFAULT 0 CHECK(credential_version BETWEEN 0 AND 2147483647),
+            catalog_json TEXT,selection_json TEXT,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,
+            UNIQUE(provider,issuer,subject,client_id), UNIQUE(provider,label)
+        );
+    "#)?;
+    connection.pragma_update(None, "user_version", 7u32)?;
     Ok(())
 }

@@ -20,8 +20,8 @@ fn open() -> (TempDir, Arc<Storage>, MemoryService) {
 
 fn remove_evolution_fixture_schema(connection: &rusqlite::Connection) {
     // These disposable fixtures model older installed schemas, where the
-    // later evolution tables did not exist. Canonical records stay intact.
-    connection.execute_batch("DROP TABLE evolution_evaluations; DROP TABLE evolution_proposals; DROP TABLE evolution_feedback; DROP TABLE evolution_head; DROP TABLE evolution_revisions;").unwrap();
+    // later evolution/account tables did not exist. Canonical records stay intact.
+    connection.execute_batch("DROP TABLE membership_accounts; DROP TABLE membership_host; DROP TABLE evolution_evaluations; DROP TABLE evolution_proposals; DROP TABLE evolution_feedback; DROP TABLE evolution_head; DROP TABLE evolution_revisions;").unwrap();
 }
 
 fn message(storage: &Storage, id: &str, role: MessageRole, text: &str) {
