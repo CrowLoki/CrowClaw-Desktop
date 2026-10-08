@@ -1,5 +1,8 @@
-script = """
-"""
+version = 1
+name = "CrowClaw Desktop"
+
+[setup]
+script = ""
 
 [setup.win32]
 script = '''

@@ -477,3 +477,37 @@ or retry masking the race. The corrected packaged candidate still needs both mod
 - The wider approved standalone roadmap, including God mode.
 
 Source and local-model evidence alone do not satisfy these remaining gates.
+
+## Later combined native candidate: evolution and personal accounts
+
+Source `3f11ed2` adds native ChatGPT plan authentication and request transport on
+top of the separately committed governed-evolution and protected account storage.
+The normal full Rust test command passes, including 91 library tests and all
+integration/doc-test targets. All 65 frontend tests pass across nine files.
+The release-mode native build passes without creating or installing a new bundle.
+Executable SHA-256:
+`29F1D56768A2AD1451571D8A3F187CB3456F352045DBE65BD271C282FA8D1574`.
+
+Verified through the actual Tauri WebView in an isolated test profile:
+
+- Existing local-provider onboarding still connects; membership controls render
+  in onboarding/settings and reject an empty registration label.
+- After stopping the synthetic fixture, Connections selected the existing local
+  LM Studio `antares-1b` model. Evolution recorded two real comparison responses,
+  including matching requested/reported model identities.
+- Draft creation, comparison and preference did not activate guidelines. The
+  test comparison was rated Neither because the outputs did not follow the
+  requested short format; no model improvement is claimed.
+- Explicit Apply created guideline revision 1. The comparison, preference and
+  active revision survived a complete application restart. Restoring revision 0
+  created revision 2 without erasing prior history.
+- Continue with ChatGPT reached OpenAI's CrowClaw account chooser. No account was
+  selected or permission granted. Native Cancel restored the controls, stored
+  no registration and closed the callback listener.
+
+The candidate and synthetic fixture closed normally and the owned UI driver was
+detached. This establishes native-executable behavior, not installation of the
+newer combined candidate. Completed account authorization/token exchange, live
+account catalog and inference, reconnect, quota and remote/local disconnect
+journeys remain unverified. Claude integration, full packaged journeys and the
+wider standalone roadmap remain outstanding. No public release is claimed.
