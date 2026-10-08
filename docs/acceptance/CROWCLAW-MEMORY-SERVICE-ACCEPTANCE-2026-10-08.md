@@ -539,3 +539,29 @@ Membership controls were ready, and the candidate closed normally. A separate
 schema-7 regression preserves existing protected credential bytes and registration
 identity through upgrade. This does not replace the live-account and packaged
 acceptance gaps stated above.
+
+### Combined installed candidate verified and source merged
+
+[Run 37772944228](https://github.com/CrowLoki/CrowClaw-Desktop/actions/runs/37772944228)
+tested exact source `15f03b695cb58c93db33c2883561660fbd629d04`. Windows build,
+fresh installation and Alpha 3 upgrade all passed with zero annotations on each
+job. Publication was skipped. Both modes tested the same installer:
+
+- Installer SHA-256: `652f202a541d925e7475149ce29f3f086e7ad9404baa6ce8f668db7a6860d58b`.
+- Unbundled executable SHA-256: `917BDB1EC0EC1EC649D2100ED72B4009EC68E4E667E9CDAB72DBBFC586DF4575`.
+- Installed executable SHA-256: `36634E02E41E58F039DF8A020B6AC20C2E76CFC4BC2F82C3C970AD9D767043EE`.
+
+The installed binary passed the exact NSIS-marker normalization check. Both
+paths proved normal shortcuts, onboarding, two conversations/notes, offline
+restart/recall, the native-only process tree and uninstall retaining data. Upgrade
+advanced schema 2 to 8 while preserving canonical digest
+`5bfb9c82baeccc9ad7dbe9fd03f9e1bfabe8a7bcbd6b6a5ad56b8adb7e7fb643`.
+Both receipts confirm owned driver-policy cleanup and no remaining installation.
+Evidence artifacts are `CrowClaw-native-acceptance-fresh-37772944228` and
+`CrowClaw-native-acceptance-upgrade-37772944228` on that run.
+
+[PR #4](https://github.com/CrowLoki/CrowClaw-Desktop/pull/4) was merged using Merge
+at `fc2043abc37967fbd4f8bbe9674a9c086da1a6c8`; its tree matches the tested source.
+This verifies the combined candidate's basic installed lifecycle, not every
+packaged journey or live membership behavior. The remaining boundaries above
+still apply, and no Alpha 4 tag/release was published.
