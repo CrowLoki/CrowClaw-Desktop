@@ -521,6 +521,34 @@ function Get-CanonicalReceipt {
     $qaJson | ConvertFrom-Json
 }
 
+function Assert-InstalledModelPicker {
+    $qaPickerProgram = @'
+async (page) => {
+  const errors=[];
+  const capture=error=>errors.push(error.message);
+  page.on('pageerror',capture);
+  try {
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    const trigger=page.getByRole('button',{name:/Model & effort/});
+    for (let cycle=0;cycle<2;cycle++) {
+      await trigger.click();
+      await page.getByRole('region',{name:'Model picker',exact:true}).waitFor({timeout:10000});
+      await page.waitForFunction(()=>document.querySelector('.composer-model-controls__trigger')?.getAttribute('aria-expanded')==='true');
+      await page.getByLabel('Search models',{exact:true}).waitFor();
+      await page.getByLabel('Reasoning effort',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'Close model picker',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('.composer-model-controls__trigger')?.getAttribute('aria-expanded')==='false');
+    }
+    if (errors.length) throw new Error('Installed model picker raised a renderer error: '+errors.join('; '));
+    await page.getByRole('navigation',{name:'CrowClaw sections',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+  } finally {page.off('pageerror',capture);}
+}
+'@
+    Invoke-NativeUi @('run-code', $qaPickerProgram)
+    $script:qaChecks.installedModelPicker = $true
+}
+
 function Assert-NativeRuntime {
     if (-not $qaApp -or $qaApp.HasExited) { throw 'Installed app exited before runtime verification.' }
     $qaNames = @(Get-OwnedNativeProcesses | Select-Object -ExpandProperty Name -Unique)
@@ -561,6 +589,7 @@ try {
     Start-InstalledApp
     if (-not $qaPreviousInstaller) { Initialize-InstalledProfile }
     Assert-InstalledContext -NoteKind $qaNoteKind -ExpectUpgradeChoice ([bool]$qaPreviousInstaller)
+    Assert-InstalledModelPicker
     Assert-NativeRuntime
     $qaChecks.twoConversationsAndLocalNotes = $true
     Invoke-NativeUi @('screenshot', '--filename=output/playwright/installed-memory.png')
