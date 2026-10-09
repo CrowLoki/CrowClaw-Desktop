@@ -63,6 +63,13 @@ export function MembershipAccounts({ membership, connection, gateway }: { member
       </select>
       <p className="membership-help">Each registration is saved separately, even when the email address is the same.</p>
       <form onSubmit={(event) => { event.preventDefault(); void membership.signIn(); }} noValidate>
+        <label className="field" htmlFor={`${id}-browser`}>Sign-in browser</label>
+        <select id={`${id}-browser`} name="membershipBrowser" value={membership.signInBrowser} disabled={busy}
+          onChange={event=>membership.setSignInBrowser(event.currentTarget.value as 'system'|'edge')}>
+          <option value="system">Windows default browser</option>
+          <option value="edge">Microsoft Edge — existing browser profile</option>
+        </select>
+        <p className="membership-help">This choice applies only to this sign-in. It does not change your Windows default browser.</p>
         <label className="field" htmlFor={`${id}-label`}>Registration label (required)</label>
         <input id={`${id}-label`} name="membershipLabel" value={label} required autoComplete="off" disabled={membership.loading || !membership.loaded}
           aria-describedby={`${id}-label-help`} onChange={(event) => membership.setLabel(event.currentTarget.value)} />

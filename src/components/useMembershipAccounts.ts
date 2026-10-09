@@ -35,6 +35,7 @@ export function useMembershipAccounts(
   const [acknowledging, setAcknowledging] = useState(false);
   const [welcomeError, setWelcomeError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [signInBrowser,setSignInBrowser] = useState<'system'|'edge'>('system');
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [choices, setChoices] = useState<Record<string, MembershipChoice>>({});
   const [pending, setPending] = useState<"sign-in" | "sign-out" | "use-model" | null>(null);
@@ -129,7 +130,7 @@ export function useMembershipAccounts(
     setNotice("Complete sign-in in the browser opened by CrowClaw.");
     operation.completion = (async () => {
       try {
-        const saved = await gateway.signInMembership({ requestId: operation.requestId, label: label.trim(), accountId });
+        const saved = await gateway.signInMembership({ requestId: operation.requestId, label: label.trim(), accountId, ...(signInBrowser==='edge'?{browser:'edge' as const}:{}) });
         if (accountId && saved.id !== accountId) throw new Error("Sign-in returned a different saved registration.");
         operation.saved = true;
         upsert(saved);
@@ -250,6 +251,7 @@ export function useMembershipAccounts(
     welcomeVisible: !welcomeAcknowledged && accounts.some((item) => item.hasCredentials),
     acknowledging, welcomeError, acknowledgeWelcome, manageUsage, retrySnapshot,
     signIn, cancelSignIn, signOut, useModel,
+    signInBrowser,setSignInBrowser,
     refresh: () => { if (account?.hasCredentials && !busyRef.current && !refreshing[selectedId]) void refresh(account.id); },
     setLabel: (value: string) => { setLabels((current) => ({ ...current, [selectedRef.current]: value })); setError(null); },
     setChoice: (value: MembershipChoice) => { setChoices((current) => ({ ...current, [selectedRef.current]: value })); setError(null); },

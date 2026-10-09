@@ -44,7 +44,7 @@ export type MembershipAccount = {
 };
 
 export type MembershipSnapshot = { accounts: MembershipAccount[]; welcomeAcknowledged: boolean };
-export type MembershipSignInRequest = { requestId: string; label: string; accountId: string | null };
+export type MembershipSignInRequest = { requestId: string; label: string; accountId: string | null; browser?: 'edge' };
 export type MembershipModelRequest = { accountId: string; model: string; reasoningEffort: string | null };
 export type MembershipSignOutResult = { account: MembershipAccount; remoteRevoked: boolean; detail: string };
 export type CodexImageAuthStatus = {

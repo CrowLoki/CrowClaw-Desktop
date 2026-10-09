@@ -8,6 +8,11 @@ const invokeMock = vi.mocked(invoke);
 
 describe("Tauri command contract", () => {
   beforeEach(() => invokeMock.mockReset());
+  it('routes an explicit Edge choice separately from account registration and OAuth material',async()=>{
+    invokeMock.mockResolvedValue(undefined);
+    await createTauriGateway().signInMembership({requestId:'edge-request',label:'Edge account',accountId:null,browser:'edge'});
+    expect(invokeMock).toHaveBeenCalledWith('crowclaw_membership_sign_in',{request:{requestId:'edge-request',label:'Edge account',accountId:null},browser:'edge'});
+  });
 
   it('uses dedicated OpenRouter envelopes and preserves the backend free-only catalog without guessed model choices', async () => {
     const gateway = createTauriGateway();

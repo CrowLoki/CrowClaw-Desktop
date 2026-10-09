@@ -110,7 +110,7 @@ export function createTauriGateway(): CrowClawGateway {
     refreshComposerModels: (sourceId) => invokeNative<ComposerModelSource>(TAURI_COMMANDS.refreshComposerModels,{request:{sourceId}}),
     setHiddenModels: (hiddenModelKeys) => invokeNative<string[]>(TAURI_COMMANDS.setHiddenModels,{hiddenModelKeys}),
     membershipSnapshot: () => invokeNative<MembershipSnapshot>(TAURI_COMMANDS.membershipSnapshot),
-    signInMembership: (request) => invokeNative<MembershipAccount>(TAURI_COMMANDS.signInMembership, { request }),
+    signInMembership: ({browser,...request}) => invokeNative<MembershipAccount>(TAURI_COMMANDS.signInMembership, browser ? { request, browser } : { request }),
     cancelMembershipSignIn: (requestId) => invokeNative<boolean>(TAURI_COMMANDS.cancelMembershipSignIn, { requestId }),
     signOutMembership: (accountId) => invokeNative<MembershipSignOutResult>(TAURI_COMMANDS.signOutMembership, { accountId }),
     refreshMembershipModels: (accountId) => invokeNative<MembershipAccount>(TAURI_COMMANDS.refreshMembershipModels, { accountId }),

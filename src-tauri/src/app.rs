@@ -974,15 +974,27 @@ pub async fn crowclaw_membership_sign_in(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     request: SignInRequest,
+    browser: Option<MembershipSignInBrowser>,
 ) -> Result<MembershipAccount, String> {
     state
         .memberships
         .sign_in(request, move |url| {
             app.opener()
-                .open_url(url, None::<&str>)
-                .map_err(|_| "Could not open the system browser for sign-in".into())
+                .open_url(url, browser.map(|choice| choice.application()))
+                .map_err(|_| if browser.is_some() {"Could not open Microsoft Edge for sign-in; no different browser was substituted".into()} else {"Could not open the system browser for sign-in".into()})
         })
         .await
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MembershipSignInBrowser {
+    Edge,
+}
+impl MembershipSignInBrowser {
+    fn application(self) -> &'static str {
+        "msedge"
+    }
 }
 
 #[tauri::command]
