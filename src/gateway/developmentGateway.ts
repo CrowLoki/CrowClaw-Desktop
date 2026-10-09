@@ -166,13 +166,14 @@ export function createDevelopmentGateway(
   }
   function composerSnapshot(id:string):ConversationComposerSnapshot {
     const saved=composerState(id), profile=saved.selection?composerConnections.get(saved.selection.providerProfileId):undefined;
-    return clone({composer:saved,connection:profile&&saved.selection?{...profile,model:saved.selection.model}:null,sources:composerSources(),warning:profile?null:'Choose a connection and model for this conversation'});
+    return clone({composer:saved,hiddenModelKeys,connection:profile&&saved.selection?{...profile,model:saved.selection.model}:null,sources:composerSources(),warning:profile?null:'Choose a connection and model for this conversation'});
   }
   function requireComposerRevision(id:string,revision:number) {
     const saved=composerState(id);
     if(saved.revision!==revision)throw new Error('This conversation changed; refresh its composer.');
     return saved;
   }
+  let hiddenModelKeys:string[]=[];
   let tasks: AgentTask[] = options.includeRunningTask
     ? [
         {
@@ -307,6 +308,7 @@ export function createDevelopmentGateway(
       composers.set(id,{...saved,selection:clone(selection),revision:revision+1});return composerSnapshot(id);
     },
     async refreshComposerModels(id) {const source=composerSources().find(source=>source.id===id);if(!source)throw new Error('Connection was not found.');return clone(source);},
+    async setHiddenModels(keys) {hiddenModelKeys=[...keys];return [...hiddenModelKeys];},
     async evolutionSnapshot() { await pause(); return clone({ ...evolution, proposals: evolution.proposals.slice(0, 100), revisions: evolution.revisions.slice(0, 100), evaluations: evolution.evaluations.slice(0, 100) }); },
     async membershipSnapshot() { return { accounts: [], welcomeAcknowledged: false }; },
     signInMembership: nativeMembershipOnly,
@@ -441,7 +443,7 @@ export function createDevelopmentGateway(
     async connectModel(draft: ModelEndpointDraft): Promise<ModelConnection> {
       const tested = await this.testConnection(draft);
       if (!tested.ok) throw new Error(tested.detail);
-      connection = {
+      const added:ModelConnection = {
         id: createId("connection", ++counter),
         provider: draft.provider,
         label: draft.label.trim() || "Local endpoint",
@@ -451,9 +453,10 @@ export function createDevelopmentGateway(
         connectedAt: now(),
         latencyMs: tested.latencyMs,
       };
+      if (draft.provider !== 'crowbot-ai' || firstRun) connection=added;
       firstRun = false;
-      composerConnections.set(connection.id,clone(connection));
-      return clone(connection);
+      composerConnections.set(added.id,clone(added));
+      return clone(added);
     },
 
     async createConversation(): Promise<{ conversation: Conversation; summary: ConversationSummary }> {

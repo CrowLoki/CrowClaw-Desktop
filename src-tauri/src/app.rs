@@ -888,6 +888,7 @@ pub enum ProviderKind {
     LmStudio,
     Ollama,
     LlamaCpp,
+    CrowbotAi,
     Custom,
 }
 
@@ -897,6 +898,7 @@ impl ProviderKind {
             Self::LmStudio => ProviderPreset::LmStudio,
             Self::Ollama => ProviderPreset::Ollama,
             Self::LlamaCpp => ProviderPreset::LlamaCpp,
+            Self::CrowbotAi => ProviderPreset::Custom,
             Self::Custom => ProviderPreset::Custom,
         }
     }
@@ -906,6 +908,7 @@ impl ProviderKind {
             Self::LmStudio => "lm-studio",
             Self::Ollama => "ollama",
             Self::LlamaCpp => "llama-cpp",
+            Self::CrowbotAi => "crowbot-ai",
             Self::Custom => "custom",
         }
     }
@@ -915,6 +918,7 @@ impl ProviderKind {
             "lm-studio" => Self::LmStudio,
             "ollama" => Self::Ollama,
             "llama-cpp" => Self::LlamaCpp,
+            "crowbot-ai" => Self::CrowbotAi,
             _ => Self::Custom,
         }
     }
@@ -1428,6 +1432,53 @@ pub async fn crowclaw_model_discover(
         ),
     ];
     let mut discovered = Vec::new();
+    // Discover only the supplier's declared public lifecycle records, never its
+    // private account/config files. Metadata GETs do not generate or print.
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        if let Ok(entries) =
+            std::fs::read_dir(PathBuf::from(local).join("CrowBot AI").join("instances"))
+        {
+            for entry in entries.flatten().take(64) {
+                if entry.path().extension().and_then(|x| x.to_str()) != Some("json")
+                    || entry.metadata().map(|m| m.len() > 8192).unwrap_or(true)
+                {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
+                    continue;
+                };
+                if record["status"] != "running" {
+                    continue;
+                }
+                let Some(url) = record["api_base"].as_str() else {
+                    continue;
+                };
+                let Ok(client) = crate::crowbot::CrowBotProvider::new(url, None) else {
+                    continue;
+                };
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    client.list_models(&CancellationToken::new()),
+                )
+                .await;
+                if matches!(result, Ok(Ok(_))) {
+                    discovered.push(DiscoveredEndpoint {
+                        id: "detected-crowbot-ai".into(),
+                        provider: ProviderKind::CrowbotAi,
+                        label: "CrowBot AI".into(),
+                        base_url: url.into(),
+                        model: "crowbot-auto".into(),
+                        detected: true,
+                        available_models: vec!["crowbot-auto".into()],
+                    });
+                    break;
+                }
+            }
+        }
+    }
     for (provider, label, base_url) in presets {
         let draft = ModelEndpointDraft {
             provider: provider.clone(),
@@ -1486,6 +1537,31 @@ async fn connect_local_model(
         return Err(tested.detail);
     }
     state.connection_changes.publish(change, || {
+        if matches!(request.provider, ProviderKind::CrowbotAi) {
+            let profile = state
+                .storage
+                .save_crowbot_connection(
+                    &ProviderProfileInput {
+                        id: format!("crowbot:{}", Uuid::new_v4()),
+                        name: non_empty_or(&request.label, "CrowBot AI"),
+                        base_url: request.base_url.trim().trim_end_matches('/').into(),
+                        model: "crowbot-auto".into(),
+                        provider_kind: "crowbot-ai".into(),
+                        credential_reference: None,
+                        is_default: state
+                            .storage
+                            .default_provider_profile()
+                            .map_err(display_error)?
+                            .is_none(),
+                    },
+                    request
+                        .api_key
+                        .as_deref()
+                        .filter(|key| !key.trim().is_empty()),
+                )
+                .map_err(display_error)?;
+            return Ok(connection_view(&profile, "connected", tested.latency_ms));
+        }
         // A different local endpoint is a different owned connection. Preserve
         // profiles already referenced by conversations instead of overwriting
         // the old single global-profile slot.
@@ -2309,6 +2385,27 @@ fn bootstrap(state: &AppState) -> Result<AppBootstrap, StorageError> {
 }
 
 async fn test_connection(request: &ModelEndpointDraft) -> Result<ConnectionTestResult, String> {
+    if matches!(request.provider, ProviderKind::CrowbotAi) {
+        let started = std::time::Instant::now();
+        let client =
+            crate::crowbot::CrowBotProvider::new(&request.base_url, request.api_key.clone())
+                .map_err(display_error)?;
+        let models = client
+            .list_models(&CancellationToken::new())
+            .await
+            .map_err(display_error)?;
+        let ok = models.iter().any(|model| model.id == "crowbot-auto");
+        return Ok(ConnectionTestResult {
+            ok,
+            latency_ms: Some(started.elapsed().as_millis() as u64),
+            resolved_model: ok.then(|| "crowbot-auto".into()),
+            detail: if ok {
+                "CrowBot AI connected; added without changing your default model".into()
+            } else {
+                "CrowBot AI did not offer its public model".into()
+            },
+        });
+    }
     if is_openrouter_url(&request.base_url) {
         return Err("Use the OpenRouter free-model connection panel so live pricing and zero-price routing are enforced".into());
     }
@@ -2397,6 +2494,15 @@ fn provider_for_profile(
     state: &AppState,
     profile: &ProviderProfile,
 ) -> Result<Arc<dyn ChatProvider>, String> {
+    if profile.provider_kind == "crowbot-ai" {
+        return Ok(Arc::new(
+            crate::crowbot::CrowBotProvider::new(
+                &profile.base_url,
+                state.storage.crowbot_key(profile).map_err(display_error)?,
+            )
+            .map_err(display_error)?,
+        ));
+    }
     if profile.provider_kind == "openrouter" {
         return openrouter::provider(state, profile, None);
     }

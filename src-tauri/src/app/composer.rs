@@ -11,6 +11,7 @@ pub struct ComposerModel {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerModelSource {
+    billing: String,
     id: String,
     label: String,
     provider: String,
@@ -20,6 +21,7 @@ pub struct ComposerModelSource {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerSnapshot {
+    hidden_model_keys: Vec<String>,
     composer: ConversationComposer,
     connection: Option<ModelConnection>,
     sources: Vec<ComposerModelSource>,
@@ -43,6 +45,36 @@ pub struct ChoiceRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceRequest {
     source_id: String,
+}
+
+fn save_hidden_models(storage: &Storage, hidden: &[String]) -> Result<Vec<String>, String> {
+    if hidden.len() > 4096 || hidden.iter().map(String::len).sum::<usize>() > 1024 * 1024 {
+        return Err("Model visibility preferences exceed their bound".into());
+    }
+    let mut unique = std::collections::HashSet::new();
+    for key in hidden {
+        let pair: Vec<String> =
+            serde_json::from_str(key).map_err(|_| "Invalid model visibility key")?;
+        if pair.len() != 2
+            || pair
+                .iter()
+                .any(|s| s.is_empty() || s.len() > 512 || s.chars().any(char::is_control))
+            || !unique.insert(key)
+        {
+            return Err("Invalid or duplicate model visibility key".into());
+        }
+    }
+    storage
+        .set_setting("model-picker-hidden", &hidden)
+        .map_err(display_error)?;
+    Ok(hidden.to_vec())
+}
+#[tauri::command]
+pub fn crowclaw_model_picker_visibility(
+    state: State<'_, AppState>,
+    hidden_model_keys: Vec<String>,
+) -> Result<Vec<String>, String> {
+    save_hidden_models(&state.storage, &hidden_model_keys)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +102,7 @@ fn local_models(storage: &Storage, profile: &ProviderProfile) -> Result<Vec<Stri
 }
 fn membership_source(account: &MembershipAccount) -> ComposerModelSource {
     ComposerModelSource {
+        billing: "membership".into(),
         id: format!("membership:{}", account.id),
         label: account.label.clone(),
         provider: "chatgpt".into(),
@@ -112,6 +145,7 @@ fn sources(state: &AppState) -> Result<Vec<ComposerModelSource>, String> {
                 .has_openrouter_key(&profile.id)
                 .map_err(display_error)?;
             sources.push(ComposerModelSource {
+                billing: "free".into(),
                 id: profile.id.clone(),
                 label: profile.name.clone(),
                 provider: "openrouter".into(),
@@ -133,6 +167,24 @@ fn sources(state: &AppState) -> Result<Vec<ComposerModelSource>, String> {
             continue;
         }
         sources.push(ComposerModelSource {
+            billing: if profile.provider_kind == "crowbot-ai" {
+                "free"
+            } else if reqwest::Url::parse(&profile.base_url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .is_some_and(|host| {
+                    host == "localhost"
+                        || host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                })
+            {
+                "local"
+            } else {
+                "unknown"
+            }
+            .into(),
             id: profile.id.clone(),
             label: profile.name.clone(),
             provider: profile.provider_kind.clone(),
@@ -140,7 +192,11 @@ fn sources(state: &AppState) -> Result<Vec<ComposerModelSource>, String> {
             models: local_models(&state.storage, &profile)?
                 .into_iter()
                 .map(|id| ComposerModel {
-                    display_name: id.clone(),
+                    display_name: if profile.provider_kind == "crowbot-ai" {
+                        "CrowBot AI".into()
+                    } else {
+                        id.clone()
+                    },
                     id,
                     reasoning_efforts: Vec::new(),
                 })
@@ -300,6 +356,11 @@ pub(super) fn snapshot(
         ),
     };
     Ok(ComposerSnapshot {
+        hidden_model_keys: state
+            .storage
+            .get_setting::<Vec<String>>("model-picker-hidden")
+            .map_err(display_error)?
+            .unwrap_or_default(),
         composer: saved,
         connection,
         sources: sources(state)?,
@@ -420,12 +481,22 @@ pub async fn crowclaw_composer_refresh_models(
     if profile.provider_kind == "chatgpt" {
         return Err("Select the account's membership connection".into());
     }
-    let client = OpenAiCompatibleClient::new(config_from_profile(&state, &profile)?)
-        .map_err(display_error)?;
-    let models = client
+    let models = if profile.provider_kind == "crowbot-ai" {
+        crate::crowbot::CrowBotProvider::new(
+            &profile.base_url,
+            state.storage.crowbot_key(&profile).map_err(display_error)?,
+        )
+        .map_err(display_error)?
         .list_models(&CancellationToken::new())
         .await
-        .map_err(display_error)?;
+        .map_err(display_error)?
+    } else {
+        OpenAiCompatibleClient::new(config_from_profile(&state, &profile)?)
+            .map_err(display_error)?
+            .list_models(&CancellationToken::new())
+            .await
+            .map_err(display_error)?
+    };
     if models.len() > 256
         || models
             .iter()
@@ -461,6 +532,46 @@ pub async fn crowclaw_composer_refresh_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn picker_visibility_persists_without_changing_models_drafts_or_default() {
+        let (dir, state) = setup();
+        let chat = state
+            .storage
+            .create_conversation(&crate::storage::ConversationInput {
+                id: "visibility-chat".into(),
+                title: "Visibility".into(),
+                provider_profile_id: None,
+            })
+            .unwrap();
+        let before = ensure(&state, &chat.id).unwrap();
+        let key = serde_json::to_string(&vec!["local-a", "model-a"]).unwrap();
+        assert_eq!(
+            save_hidden_models(&state.storage, &[key.clone()]).unwrap(),
+            vec![key.clone()]
+        );
+        assert_eq!(ensure(&state, &chat.id).unwrap(), before);
+        assert_eq!(
+            state
+                .storage
+                .default_provider_profile()
+                .unwrap()
+                .unwrap()
+                .id,
+            "local-a"
+        );
+        assert!(save_hidden_models(&state.storage, &["invalid".into()]).is_err());
+        assert!(save_hidden_models(&state.storage, &[key.clone(), key.clone()]).is_err());
+        drop(state);
+        let reopened = AppState::open(dir.path().into()).unwrap();
+        assert_eq!(
+            reopened
+                .storage
+                .get_setting::<Vec<String>>("model-picker-hidden")
+                .unwrap()
+                .unwrap(),
+            vec![key]
+        );
+    }
     fn setup() -> (tempfile::TempDir, AppState) {
         let dir = tempfile::TempDir::new().unwrap();
         let state = AppState::open(dir.path().into()).unwrap();

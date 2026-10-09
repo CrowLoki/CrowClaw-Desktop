@@ -18,6 +18,7 @@ export type ConversationComposerController = View & {
   setDraft(text: string): void;
   choose(selection: ConversationModelChoice): Promise<void>;
   refreshSource(sourceId: string): Promise<void>;
+  setHiddenModels(hiddenModelKeys: string[]): Promise<void>;
   /** Explicit recovery: reload native state, retain local edits, unblock writes.
    * Does not save retained text until a subsequent edit, flush, or choice. */
   refresh(): Promise<void>;
@@ -47,6 +48,16 @@ const unavailable = () => new Error('Select a conversation and load its composer
 // Owned by the mounted hook, scoped to its gateway. No account-global/provider fallback.
 function createController(gateway: CrowClawGateway) {
   const entries = new Map<string, Entry>();
+  let visibilityRevision=0;
+  let latestHiddenModels:string[]=[];
+  const visibilitySnapshots=new WeakMap<ConversationComposerSnapshot,number>();
+  async function currentVisibility(operation:()=>Promise<ConversationComposerSnapshot>) {
+    const started=visibilityRevision;
+    const snapshot=await operation();
+    const tagged={...snapshot};
+    visibilitySnapshots.set(tagged,started);
+    return tagged;
+  }
   const listeners = new Set<() => void>();
   const entry = (id: string) => {
     let value = entries.get(id);
@@ -86,20 +97,24 @@ function createController(gateway: CrowClawGateway) {
     return result;
   }
   function accept(e: Entry, snapshot: ConversationComposerSnapshot, preserve: boolean) {
+    // Reconcile at publication, not in an earlier async continuation: a
+    // visibility response can settle between a wrapper and this caller.
+    const started=visibilitySnapshots.get(snapshot);
+    if (started!==undefined && started!==visibilityRevision) snapshot={...snapshot,hiddenModelKeys:[...latestHiddenModels]};
     if (snapshot.composer.conversationId !== e.id) throw new Error('Composer response belongs to another conversation.');
     const draft = preserve ? e.view.draft : snapshot.composer.draft;
     e.dirty = draft !== snapshot.composer.draft;
     publish(e, { snapshot, draft });
   }
   async function read(e: Entry) {
-    const snapshot = await gateway.getComposer(e.id);
+    const snapshot = await currentVisibility(()=>gateway.getComposer(e.id));
     // Check dirty at completion, including edits made during the native read.
     accept(e, snapshot, e.dirty || e.sent !== null);
     e.blocked = false;
     publish(e, { error: null });
   }
   async function readMetadata(e:Entry) {
-    const snapshot=await gateway.getComposer(e.id);
+    const snapshot=await currentVisibility(()=>gateway.getComposer(e.id));
     const preserve=e.dirty || e.sent!==null;
     const changed=e.view.snapshot!==null && snapshot.composer.revision!==e.view.snapshot.composer.revision;
     if(preserve && changed) {
@@ -119,7 +134,7 @@ function createController(gateway: CrowClawGateway) {
     if (!e.view.snapshot) throw unavailable();
     while (e.dirty) {
       const draft = e.view.draft;
-      const snapshot = await gateway.saveComposerDraft(e.id, e.view.snapshot.composer.revision, draft);
+      const snapshot = await currentVisibility(()=>gateway.saveComposerDraft(e.id, e.view.snapshot!.composer.revision, draft));
       accept(e, snapshot, true);
       // A successful save must acknowledge the requested draft. Never spin on a bad reply.
       if (snapshot.composer.draft !== draft) throw new Error('Native composer did not acknowledge the saved draft.');
@@ -148,9 +163,9 @@ function createController(gateway: CrowClawGateway) {
     await queue(e, 'write', async () => {
       const revision = await saveLatest(e);
       const before = e.view.snapshot!.composer;
-      const snapshot = attachmentId === undefined
-        ? await gateway.selectAttachments(e.id, revision)
-        : await gateway.removeAttachment(e.id, revision, attachmentId);
+      const snapshot = await currentVisibility(()=>attachmentId === undefined
+        ? gateway.selectAttachments(e.id, revision)
+        : gateway.removeAttachment(e.id, revision, attachmentId));
       const after = snapshot.composer;
       if ((after.revision !== revision && after.revision !== revision + 1)
         || after.draft !== before.draft
@@ -200,7 +215,7 @@ function createController(gateway: CrowClawGateway) {
           cancelTimer(e);
           await queue(e, 'write', async () => {
             const revision = await saveLatest(e);
-            accept(e, await gateway.chooseComposerModel(e.id, revision, selection), true);
+            accept(e, await currentVisibility(()=>gateway.chooseComposerModel(e.id, revision, selection)), true);
           });
         },
         async refresh() {
@@ -220,13 +235,21 @@ function createController(gateway: CrowClawGateway) {
             await readMetadata(e);
           });
         },
+        async setHiddenModels(hiddenModelKeys) {
+          const saved=await gateway.setHiddenModels(hiddenModelKeys);
+          latestHiddenModels=[...saved];
+          visibilityRevision++;
+          for (const item of entries.values()) {
+            if (item.view.snapshot) publish(item,{snapshot:{...item.view.snapshot,hiddenModelKeys:saved}});
+          }
+        },
         async submitted(conversationId, submittedDraft) {
           const e = requireEntry(conversationId);
           const sent = e.sent;
           const submittedEdits = sent?.draft === submittedDraft ? sent.edits : e.edits;
           cancelTimer(e);
           await queue(e, 'read', async () => {
-            const snapshot = await gateway.getComposer(e.id);
+            const snapshot = await currentVisibility(()=>gateway.getComposer(e.id));
             const newerEdit = e.edits !== submittedEdits || e.view.draft !== submittedDraft;
             accept(e, snapshot, newerEdit);
             e.blocked = false;

@@ -132,12 +132,12 @@ fn schema_ten_upgrade_preserves_profiles_messages_drafts_and_attachments() {
         .unwrap();
     let messages = storage.list_messages("chat").unwrap();
     let raw = Connection::open(storage.close().unwrap()).unwrap();
-    raw.execute_batch("DROP TABLE openrouter_credentials; PRAGMA user_version=10;")
+    raw.execute_batch("DROP TABLE crowbot_credentials; DROP TABLE openrouter_credentials; PRAGMA user_version=10;")
         .unwrap();
     drop(raw);
     let upgraded = Storage::open(dir.path()).unwrap();
-    assert_eq!(upgraded.schema_version().unwrap(), 11);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 11);
+    assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 12);
     assert_eq!(upgraded.get_provider_profile("old").unwrap(), Some(saved));
     assert_eq!(upgraded.list_messages("chat").unwrap(), messages);
     assert_eq!(upgraded.conversation_composer("chat").unwrap(), composer);

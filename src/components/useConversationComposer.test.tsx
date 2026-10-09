@@ -62,6 +62,48 @@ describe('useConversationComposer', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('does not let an older draft response undo newer saved visibility', async () => {
+    const n=native();
+    const pending=deferred<ConversationComposerSnapshot>();
+    n.saveComposerDraft.mockImplementationOnce(()=>pending.promise);
+    n.gateway.setHiddenModels=vi.fn(async keys=>[...keys]);
+    const {result}=renderHook(()=>useConversationComposer(n.gateway,'a'));
+    await settle();
+    act(()=>result.current.setDraft('new draft'));
+    await autosave();
+    expect(result.current.saving).toBe(true);
+    const keys=[JSON.stringify(['local','hidden'])];
+    await act(async()=>{await result.current.setHiddenModels(keys);});
+    expect(result.current.snapshot?.hiddenModelKeys).toEqual(keys);
+    await act(async()=>{pending.resolve({...snapshot('a','new draft',17),hiddenModelKeys:[]});});
+    await settle();
+    expect(result.current.snapshot?.hiddenModelKeys).toEqual(keys);
+    expect(result.current.draft).toBe('new draft');
+  });
+
+  it('reconciles visibility at publication when both responses settle in the same turn', async () => {
+    const n=native();
+    const draftResponse=deferred<ConversationComposerSnapshot>();
+    const visibilityResponse=deferred<string[]>();
+    n.saveComposerDraft.mockImplementationOnce(()=>draftResponse.promise);
+    n.gateway.setHiddenModels=vi.fn(()=>visibilityResponse.promise);
+    const {result}=renderHook(()=>useConversationComposer(n.gateway,'a'));
+    await settle();
+    act(()=>result.current.setDraft('new draft'));
+    await autosave();
+    const keys=[JSON.stringify(['local','hidden'])];
+    let saving!:Promise<void>;
+    act(()=>{saving=result.current.setHiddenModels(keys);});
+    await act(async()=>{
+      draftResponse.resolve({...snapshot('a','new draft',17),hiddenModelKeys:[]});
+      visibilityResponse.resolve(keys);
+      await saving;
+    });
+    await settle();
+    expect(result.current.snapshot?.hiddenModelKeys).toEqual(keys);
+    expect(result.current.draft).toBe('new draft');
+  });
+
   it('does not adopt a cancelled picker reply that would overwrite another window draft', async () => {
     const n = native();
     n.states.set('a', snapshot('a', 'original', 10));

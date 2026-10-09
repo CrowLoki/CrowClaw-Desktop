@@ -159,7 +159,7 @@ async fn probe(
         let report = json!({"case":name,"http":status,"status":safe_tag(&response_value["status"]),
             "errorCode":safe_tag(&error["code"]),"errorParam":safe_tag(&error["param"]),"requestError":safe_request_error(status,&response_value),
             "incompleteReason":safe_tag(&response_value["incomplete_details"]["reason"]),
-            "responseFields":{"max_output_tokens":response_value["max_output_tokens"],"temperature":response_value["temperature"],"top_p":response_value["top_p"]},
+            "responseFields":{"reasoning":response_value["reasoning"],"max_output_tokens":response_value["max_output_tokens"],"temperature":response_value["temperature"],"top_p":response_value["top_p"]},
             "inputTokens":response_value["usage"]["input_tokens"],
             "wireBytes":bytes.len(),"outputCharacters":text.chars().count(),
             "outputTokens":response_value["usage"]["output_tokens"],"text":text.chars().take(400).collect::<String>(),"toolCalls":calls,"events":types});
@@ -175,7 +175,7 @@ fn save(path: &std::path::Path, reports: &[Value]) -> Result<(), String> {
     std::fs::write(
         path,
         serde_json::to_vec_pretty(
-            &json!({"model":MODEL,"reasoning":"low","syntheticOnly":true,"results":reports}),
+            &json!({"model":MODEL,"reasoning":if reports.first().is_some_and(|r|r["case"]=="reasoning_none") {"none"} else {"low"},"syntheticOnly":true,"results":reports}),
         )
         .map_err(|_| "Could not serialize probe receipt")?,
     )
@@ -211,7 +211,13 @@ async fn authorized_luna_probe() {
     assert!(
         matches!(
             phase.as_str(),
-            "fields" | "constraints" | "tools" | "large_input" | "maximum_output" | "long_output"
+            "fields"
+                | "constraints"
+                | "tools"
+                | "large_input"
+                | "maximum_output"
+                | "long_output"
+                | "reasoning_none"
         ),
         "Unknown probe phase"
     );
@@ -250,7 +256,13 @@ async fn authorized_luna_probe() {
         "Luna/low must be offered to this account"
     );
     let mut cases = vec![("baseline".to_string(), base())];
-    if matches!(
+    if phase == "reasoning_none" {
+        cases.clear();
+        let mut payload = base();
+        payload["reasoning"] = json!({"effort":"none"});
+        payload["max_output_tokens"] = json!(64);
+        cases.push((phase.clone(), payload));
+    } else if matches!(
         phase.as_str(),
         "large_input" | "maximum_output" | "long_output"
     ) {

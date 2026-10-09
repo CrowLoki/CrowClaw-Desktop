@@ -50,6 +50,10 @@ const providers: Array<{
     baseUrl: "http://127.0.0.1:8000/v1",
     model: "local-model",
   },
+  {
+    id: "crowbot-ai", name: "CrowBot AI", description: "Independent printer-derived AI provider",
+    baseUrl: "", model: "crowbot-auto",
+  },
 ];
 
 export function ProviderForm({
@@ -88,7 +92,7 @@ export function ProviderForm({
       label: detected?.label ?? preset.name,
       baseUrl: detected?.baseUrl ?? preset.baseUrl,
       model: detected?.model ?? preset.model,
-      apiKey: provider === "custom" ? draft.apiKey : undefined,
+      apiKey: provider === "custom" || provider === "crowbot-ai" ? draft.apiKey : undefined,
     });
   }
 
@@ -111,6 +115,7 @@ export function ProviderForm({
     setError(null);
     try {
       await onSubmit(draft);
+      if (draft.provider === "crowbot-ai") setDraft(current => ({ ...current, apiKey: undefined }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The connection could not be saved.");
     } finally {
@@ -176,9 +181,9 @@ export function ProviderForm({
             autoComplete="off"
           />
         </label>
-        {draft.provider === "custom" && (
+        {(draft.provider === "custom" || draft.provider === "crowbot-ai") && (
           <label className="field field--wide">
-            <span>API key <small>Optional; kept only for this app session</small></span>
+            <span>{draft.provider === "crowbot-ai" ? "Gateway key" : "API key"} <small>{draft.provider === "crowbot-ai" ? "Hosted endpoint only; protected on this Windows profile" : "Optional; kept only for this app session"}</small></span>
             <input
               type="password"
               value={draft.apiKey ?? ""}
@@ -188,6 +193,7 @@ export function ProviderForm({
             />
           </label>
         )}
+        {draft.provider === "crowbot-ai" && <p className="field field--wide">Use the API address in CrowBot AI’s Connection details. Its local port changes when that app restarts. Hosted access needs your own gateway key. Adding this provider does not replace your default model.</p>}
       </div>
 
       <div className="connection-result" aria-live="polite">

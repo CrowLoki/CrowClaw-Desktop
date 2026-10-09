@@ -107,7 +107,7 @@ export function MembershipAccounts({ membership, connection, gateway }: { member
                     onChange={(event) => membership.setChoice({ ...choice, reasoningEffort: event.currentTarget.value || null })}>
                     <option value="">Provider default (no override)</option>
                     {effortUnavailable && <option value={choice.reasoningEffort!} disabled>Previous effort unavailable — choose again</option>}
-                    {model?.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+                    {model?.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort === "none" ? "None (no reasoning)" : effort}</option>)}
                   </select>
                   {model?.reasoningEfforts.length === 0 && <p className="membership-help">This model returned no effort options. CrowClaw sends no reasoning effort override.</p>}
                   <button className="button button--primary" type="submit" disabled={busy}>{membership.pending === "use-model" ? "Applying model…" : "Use this model"}</button>

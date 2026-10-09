@@ -2,7 +2,7 @@ import type { ConversationComposerSnapshot, ConversationModelChoice, ComposerMod
 import type { AttachmentPreview, AttachmentSummary } from './attachmentContracts';
 import type { FreeCatalog, OpenRouterConnectRequest } from './openRouterContracts';
 
-export type ProviderKind = "lm-studio" | "ollama" | "llama-cpp" | "custom";
+export type ProviderKind = "lm-studio" | "ollama" | "llama-cpp" | "crowbot-ai" | "custom";
 
 export type ModelEndpointDraft = {
   provider: ProviderKind;
@@ -250,6 +250,7 @@ export interface CrowClawGateway {
   saveComposerDraft(conversationId: string, revision: number, draft: string): Promise<ConversationComposerSnapshot>;
   chooseComposerModel(conversationId: string, revision: number, selection: ConversationModelChoice): Promise<ConversationComposerSnapshot>;
   refreshComposerModels(sourceId: string): Promise<ComposerModelSource>;
+  setHiddenModels(hiddenModelKeys: string[]): Promise<string[]>;
   membershipSnapshot(): Promise<MembershipSnapshot>;
   signInMembership(request: MembershipSignInRequest): Promise<MembershipAccount>;
   cancelMembershipSignIn(requestId: string): Promise<boolean>;

@@ -514,6 +514,20 @@ fn catalog_preserves_account_server_order_and_advertised_efforts_only() {
 }
 
 #[test]
+fn luna_offers_verified_explicit_none_without_guessing_other_models() {
+    let catalog = parse_catalog("account", json!({"models":[
+        {"slug":"gpt-6-luna","display_name":"Luna","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]},
+        {"slug":"other-model","display_name":"Other","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}
+    ]})).unwrap();
+    assert_eq!(catalog.models[0].reasoning_efforts, ["none", "low"]);
+    assert_eq!(catalog.models[1].reasoning_efforts, ["low"]);
+    let explicit = parse_catalog("account", json!({"models":[
+        {"slug":"gpt-6-luna","display_name":"Luna","visibility":"list","supported_reasoning_levels":[{"effort":"none"},{"effort":"low"}]}
+    ]})).unwrap();
+    assert_eq!(explicit.models[0].reasoning_efforts, ["none", "low"]);
+}
+
+#[test]
 fn provider_errors_never_echo_tokens_prompt_text_or_response_bodies() {
     let body = br#"{"error":{"code":"invalid_grant","message":"SYNTHETIC-PRIVATE-TOKEN"}}"#;
     let message = provider_failure(401, body);

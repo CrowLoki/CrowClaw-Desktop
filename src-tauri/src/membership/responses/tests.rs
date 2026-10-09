@@ -285,6 +285,24 @@ fn text_output(text: &str) -> Value {
 }
 
 #[test]
+fn explicit_none_is_sent_and_is_not_provider_default() {
+    let mut selected = selection();
+    selected.model = "gpt-6-luna".into();
+    selected.reasoning_effort = Some("none".into());
+    let mut input = request(vec![ChatMessage::user("Synthetic check")]);
+    input.model = selected.model.clone();
+    assert_eq!(
+        request_body(&input, &selected).unwrap()["reasoning"]["effort"],
+        "none"
+    );
+    selected.reasoning_effort = None;
+    assert!(request_body(&input, &selected)
+        .unwrap()
+        .get("reasoning")
+        .is_none());
+}
+
+#[test]
 fn sends_the_selected_account_model_and_effort_without_server_storage_or_api_key_fallback() {
     let mut input = request(vec![
         ChatMessage::system("App instructions"),
