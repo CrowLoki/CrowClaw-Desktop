@@ -518,7 +518,7 @@ fn schema_eight_upgrade_preserves_messages_and_starts_with_no_invented_choice() 
     let before = storage.list_messages("chat-a").unwrap();
     let path = storage.close().unwrap();
     let raw = Connection::open(path).unwrap();
-    raw.execute_batch("DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; PRAGMA user_version=8;")
+    raw.execute_batch("DROP TABLE crowbot_credentials; DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; PRAGMA user_version=8;")
         .unwrap();
     drop(raw);
     let upgraded = Storage::open(dir.path()).unwrap();

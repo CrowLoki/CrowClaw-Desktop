@@ -12,7 +12,9 @@ async function ready() {
 
 async function chooseModel(sourceId: string, model: string) {
   const summary = screen.getByText("Model & effort");
-  if (!summary.closest("details")!.open) await userEvent.click(summary);
+  if (summary.closest("button")!.getAttribute("aria-expanded") !== "true") await userEvent.click(summary);
+  const details=screen.getByText("Selection details");
+  if (!details.closest("details")!.open) await userEvent.click(details);
   await waitFor(() => expect(screen.getByLabelText("Provider/account")).toBeEnabled());
   await userEvent.selectOptions(screen.getByLabelText("Provider/account"), sourceId);
   await userEvent.selectOptions(screen.getByLabelText("Model", { exact: true }), model);

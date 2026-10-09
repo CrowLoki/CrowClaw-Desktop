@@ -410,8 +410,25 @@ async (page) => {
   await panel.getByLabel("Model output dimensions",{exact:true}).fill("3");
   await panel.getByRole("button",{name:"Save semantic profile",exact:true}).click();
   await panel.getByText("Local memory settings saved.",{exact:true}).waitFor();
-  await panel.getByRole("button",{name:"Update semantic index",exact:true}).click();
-  await panel.getByText(/^Stored \d+ semantic vectors;/).waitFor();
+  const semantic=panel.locator('[aria-labelledby=semantic-memory-title]');
+  let ready=false;
+  for(let batch=0;batch<8;batch++) {
+    await panel.getByRole("button",{name:"Update semantic index",exact:true}).click();
+    await page.waitForFunction(()=>{
+      const p=document.querySelector('[aria-labelledby=native-memory-title]');
+      const button=[...p.querySelectorAll('button')].find(b=>b.textContent==='Update semantic index');
+      const notice=[...p.querySelectorAll('p[role=status]')].find(n=>/^Stored \d+ semantic vectors;/.test(n.textContent));
+      return button&&!button.disabled&&notice;
+    });
+    const notice=await panel.getByText(/^Stored \d+ semantic vectors;/).innerText();
+    const report=/^Stored (\d+) semantic vectors; (\d+) pending\.\s*(.*)$/.exec(notice);
+    if(!report||report[3]) throw new Error('Semantic indexing did not complete cleanly: '+notice);
+    const status=await semantic.getByRole('status').innerText();
+    const counts=/^(\d+) semantic vectors stored · (\d+) pending\./.exec(status);
+    if(counts&&Number(counts[1])>0&&Number(counts[2])===0){ready=true;break;}
+    if(Number(report[1])===0) throw new Error('Semantic index made no progress: '+notice+' '+status);
+  }
+  if(!ready)throw new Error('Semantic index still has pending chunks after the bounded batch allowance');
   await search("semantic","distant galaxy observation");
   await panel.locator("article.memory-card").first().getByText("Semantic match",{exact:true}).waitFor();
 }
@@ -521,6 +538,34 @@ function Get-CanonicalReceipt {
     $qaJson | ConvertFrom-Json
 }
 
+function Assert-InstalledModelPicker {
+    $qaPickerProgram = @'
+async (page) => {
+  const errors=[];
+  const capture=error=>errors.push(error.message);
+  page.on('pageerror',capture);
+  try {
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    const trigger=page.getByRole('button',{name:/Model & effort/});
+    for (let cycle=0;cycle<2;cycle++) {
+      await trigger.click();
+      await page.getByRole('region',{name:'Model picker',exact:true}).waitFor({timeout:10000});
+      await page.waitForFunction(()=>document.querySelector('.composer-model-controls__trigger')?.getAttribute('aria-expanded')==='true');
+      await page.getByLabel('Search models',{exact:true}).waitFor();
+      await page.getByLabel('Reasoning effort',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'Close model picker',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('.composer-model-controls__trigger')?.getAttribute('aria-expanded')==='false');
+    }
+    if (errors.length) throw new Error('Installed model picker raised a renderer error: '+errors.join('; '));
+    await page.getByRole('navigation',{name:'CrowClaw sections',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+  } finally {page.off('pageerror',capture);}
+}
+'@
+    Invoke-NativeUi @('run-code', $qaPickerProgram)
+    $script:qaChecks.installedModelPicker = $true
+}
+
 function Assert-NativeRuntime {
     if (-not $qaApp -or $qaApp.HasExited) { throw 'Installed app exited before runtime verification.' }
     $qaNames = @(Get-OwnedNativeProcesses | Select-Object -ExpandProperty Name -Unique)
@@ -561,6 +606,7 @@ try {
     Start-InstalledApp
     if (-not $qaPreviousInstaller) { Initialize-InstalledProfile }
     Assert-InstalledContext -NoteKind $qaNoteKind -ExpectUpgradeChoice ([bool]$qaPreviousInstaller)
+    Assert-InstalledModelPicker
     Assert-NativeRuntime
     $qaChecks.twoConversationsAndLocalNotes = $true
     Invoke-NativeUi @('screenshot', '--filename=output/playwright/installed-memory.png')

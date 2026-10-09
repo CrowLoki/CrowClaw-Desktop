@@ -2,6 +2,7 @@ mod actions;
 pub mod attachments;
 pub mod composer;
 mod conversations;
+mod crowbot_credentials;
 mod crowquant;
 mod error;
 mod evolution;

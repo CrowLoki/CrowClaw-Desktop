@@ -1235,7 +1235,7 @@ fn parse_catalog(id: &str, raw: serde_json::Value) -> Result<MembershipCatalog, 
             .ok_or("Model catalog contains an invalid display name")?;
         // Optional published OpenAI catalog metadata. Use only values actually
         // returned for this account; absent metadata permits no explicit override.
-        let reasoning_efforts = match model.get("supported_reasoning_levels") {
+        let mut reasoning_efforts = match model.get("supported_reasoning_levels") {
             None | Some(serde_json::Value::Null) => Vec::new(),
             Some(value) => value
                 .as_array()
@@ -1250,6 +1250,12 @@ fn parse_catalog(id: &str, raw: serde_json::Value) -> Result<MembershipCatalog, 
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         };
+        // Luna's account catalog omits this wire option. A bounded live native
+        // Responses probe verified explicit effort=none (HTTP 200/completed).
+        // Keep it distinct from omission; never guess support for other models.
+        if slug == "gpt-6-luna" && !reasoning_efforts.iter().any(|effort| effort == "none") {
+            reasoning_efforts.insert(0, "none".into());
+        }
         choices.push(MembershipModel {
             slug: slug.into(),
             display_name: display_name.into(),

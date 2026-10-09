@@ -95,6 +95,7 @@ impl Storage {
             DELETE FROM tasks;
             DELETE FROM conversations;
             DELETE FROM openrouter_credentials;
+            DELETE FROM crowbot_credentials;
             DELETE FROM provider_profiles;
             DELETE FROM settings;
             DELETE FROM crowquant_memories;
@@ -123,6 +124,7 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
              (SELECT COUNT(*) FROM settings) +
              (SELECT COUNT(*) FROM provider_profiles) +
              (SELECT COUNT(*) FROM openrouter_credentials) +
+             (SELECT COUNT(*) FROM crowbot_credentials) +
              (SELECT COUNT(*) FROM membership_accounts) +
              (SELECT COUNT(*) FROM membership_host) +
              (SELECT COUNT(*) FROM conversations) +

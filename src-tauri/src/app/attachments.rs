@@ -76,6 +76,21 @@ pub(super) async fn validate_support(
     if attachments.len() > MAX_FILES {
         return Err("This conversation exceeds eight attachments in a model request; start a new conversation for more files".into());
     }
+    if profile.provider_kind == "crowbot-ai" {
+        let mut images = 0;
+        for attachment in &attachments {
+            match attachment {
+                AttachmentContent::Image{media_type,data_base64,..} => {
+                    images+=1;
+                    if images>2 || !matches!(media_type.as_str(),"image/png"|"image/jpeg"|"image/webp") || decoded_size(data_base64)>10*1024*1024 {
+                        return Err("CrowBot picture input supports at most two PNG/JPEG/WebP images of 10 MiB each; originals and the draft are retained".into());
+                    }
+                }
+                AttachmentContent::File{..} => return Err("CrowBot's chat picture route requires extracted text or PNG/JPEG/WebP input; raw documents are retained but not sent".into()),
+                AttachmentContent::Text{..} => {}
+            }
+        }
+    }
     let mut total = 0usize;
     let mut needs_vision = false;
     let mut needs_files = false;
@@ -123,6 +138,9 @@ pub(super) async fn validate_support(
             return Ok(());
         }
         return Err("Image/document support has not been verified for this account model. Choose a supported model or remove the attachment; no fallback was used".into());
+    }
+    if profile.provider_kind == "crowbot-ai" {
+        return Ok(());
     }
     if needs_files {
         return Err("This local provider cannot receive raw documents yet. Attach UTF-8 text or use a supported document model; no file was sent".into());

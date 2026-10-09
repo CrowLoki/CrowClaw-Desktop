@@ -483,7 +483,8 @@ describe("Native membership account workflow", () => {
     await useAccount("A");
     await userEvent.click(screen.getByRole("button", { name: "Connections" }));
     expect(await screen.findByLabelText("Endpoint URL")).toHaveValue("http://127.0.0.1:1234/v1");
-    expect(screen.getAllByRole("radio")).toHaveLength(4);
+    expect(screen.getAllByRole("radio")).toHaveLength(5);
+    expect(screen.getByRole("radio", { name: /CrowBot AI/ })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /ChatGPT/ })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await screen.findByText(/Connected to LM Studio/);

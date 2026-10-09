@@ -1,5 +1,6 @@
 pub mod agent;
 mod app;
+pub mod crowbot;
 pub mod crowquant;
 mod crowquant_memory;
 pub mod evolution;
@@ -79,6 +80,7 @@ pub fn run() {
             app::composer::crowclaw_composer_save_draft,
             app::composer::crowclaw_composer_choose,
             app::composer::crowclaw_composer_refresh_models,
+            app::composer::crowclaw_model_picker_visibility,
             app::attachments::crowclaw_attachments_select,
             app::attachments::crowclaw_attachment_remove,
             app::attachments::crowclaw_attachment_preview,

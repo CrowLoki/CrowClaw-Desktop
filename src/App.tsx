@@ -176,6 +176,11 @@ export function App({ gateway = defaultGateway }: AppProps) {
 
   async function connectModel(draft: ModelEndpointDraft) {
     const connection = await gateway.connectModel(draft);
+    if (draft.provider === 'crowbot-ai') {
+      if (bootstrap?.firstRun) {await loadApp();return;}
+      await composer.sync();
+      return;
+    }
     setBootstrap((current) => current ? { ...current, firstRun: false, connection } : current);
     if (!bootstrap || bootstrap.firstRun) await loadApp();
   }
@@ -394,7 +399,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
           composerLoading={conversationLoading || composer.loading}
           selectedFolder={conversation ? conversationFolders[conversation.id] ?? null : null}
           onSelectedFolderChange={folder=>{if(conversation)setConversationFolders(current=>({...current,[conversation.id]:folder}));}}
-          modelControls={<><ComposerModelControls key={conversation?.id ?? 'none'} value={composer.snapshot?.composer.selection ?? null} sources={composer.snapshot?.sources ?? []} busy={conversationLoading || composer.loading || sending} onChoose={composer.choose} onRefresh={composer.refreshSource} />
+          modelControls={<><ComposerModelControls key={conversation?.id ?? 'none'} value={composer.snapshot?.composer.selection ?? null} sources={composer.snapshot?.sources ?? []} busy={conversationLoading || composer.loading || sending} onChoose={composer.choose} onRefresh={composer.refreshSource} hiddenModelKeys={composer.snapshot?.hiddenModelKeys ?? []} onHiddenModelsChange={composer.setHiddenModels} />
             {(composer.draft || composer.saving) && <span role="status">{composer.saving ? 'Saving draft…' : composer.snapshot?.composer.draft === composer.draft ? 'Draft saved on this device.' : 'Draft kept in this window; not saved yet.'}</span>}
             {(composer.error || operationError || (conversation && sendErrors[conversation.id])) && <button type="button" className="button button--secondary" disabled={composer.loading || sending} onClick={()=>void composer.refresh().then(()=>{setOperationError(null);if(conversation)setSendErrors(current=>({...current,[conversation.id]:null}));}).catch(()=>undefined)}>Refresh composer</button>}
           </>}

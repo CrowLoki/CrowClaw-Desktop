@@ -611,7 +611,7 @@ fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
+            "DROP TABLE crowbot_credentials; DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
         )
         .unwrap();
     drop(connection);
@@ -660,7 +660,7 @@ fn schema_seven_upgrade_preserves_registration_and_protected_credentials() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
+            "DROP TABLE crowbot_credentials; DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
         )
         .unwrap();
     drop(connection);

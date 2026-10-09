@@ -430,7 +430,7 @@ fn schema_nine_upgrade_preserves_existing_draft_and_message() {
     storage.append_message(&message).unwrap();
     let path = storage.close().unwrap();
     let raw = Connection::open(path).unwrap();
-    raw.execute_batch("DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; PRAGMA user_version=9;").unwrap();
+    raw.execute_batch("DROP TABLE crowbot_credentials; DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; PRAGMA user_version=9;").unwrap();
     drop(raw);
     let upgraded = Storage::open(dir.path()).unwrap();
     assert_eq!(

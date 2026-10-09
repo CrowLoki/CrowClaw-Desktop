@@ -15,13 +15,15 @@ export type ConversationComposerState = {
   attachments?: AttachmentSummary[];
 };
 export type ComposerModelSource = {
+  billing?: 'membership' | 'free' | 'local' | 'api-credits' | 'unknown';
   id: string;
   label: string;
   provider: string;
   status: 'ready' | 'disconnected';
-  models: Array<{ id: string; displayName: string; reasoningEfforts: string[] }>;
+  models: Array<{ id: string; displayName: string; reasoningEfforts: string[]; billing?: 'membership' | 'free' | 'local' | 'api-credits' | 'unknown'; priceHint?: string }>;
 };
 export type ConversationComposerSnapshot = {
+  hiddenModelKeys?: string[];
   composer: ConversationComposerState;
   connection: ModelConnection | null;
   sources: ComposerModelSource[];

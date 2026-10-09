@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -52,6 +52,13 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     }
     if installed_version < 11 {
         migrate_to_v11(&transaction)?;
+    }
+    if installed_version < 12 {
+        transaction.execute_batch("CREATE TABLE crowbot_credentials (
+            provider_profile_id TEXT PRIMARY KEY NOT NULL REFERENCES provider_profiles(id) ON DELETE CASCADE,
+            protected_blob BLOB NOT NULL CHECK(typeof(protected_blob)='blob' AND length(protected_blob) BETWEEN 1 AND 2097152)
+        );")?;
+        transaction.pragma_update(None, "user_version", 12u32)?;
     }
 
     transaction.commit()?;
