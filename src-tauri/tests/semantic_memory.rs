@@ -218,6 +218,61 @@ fn profiles_reject_remote_hosts_credentials_and_invalid_dimensions() {
 }
 
 #[tokio::test]
+async fn a_completed_batch_is_not_a_completed_semantic_index() {
+    let server = fixture(EmbeddingProvider::OpenAi, "normal").await;
+    let (_dir, storage, service) = open();
+    for index in 0..9 {
+        service
+            .remember(&format!(
+                "A motor vehicle requires maintenance record {index}"
+            ))
+            .unwrap();
+    }
+    let selected = profile(&server, EmbeddingProvider::OpenAi);
+    service
+        .configure(MemorySettings {
+            embedding: Some(selected.clone()),
+            ..MemorySettings::default()
+        })
+        .unwrap();
+    let first = service
+        .sync_semantic(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(first.indexed, 8);
+    assert_eq!(first.pending, 1);
+    let remaining = storage
+        .memory_semantic_candidates(&selected.id().unwrap(), true, true, 8)
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    let target = remaining[0].source_id.clone();
+    let mut request = query("automobile");
+    request.limit = 20;
+    let before = service
+        .search_async(&request, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!before.hits.iter().any(|hit| hit.source_id == target));
+    let last = service
+        .sync_semantic(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(last.pending, 0);
+    assert_eq!(service.status().unwrap().semantic.vectors, 9);
+    let after = service
+        .search_async(&request, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(after.hits.iter().any(|hit| hit.source_id == target
+        && hit
+            .channels
+            .iter()
+            .any(|channel| channel.channel == "semantic")));
+    // Completing background work does not mutate an earlier search snapshot.
+    assert!(!before.hits.iter().any(|hit| hit.source_id == target));
+}
+
+#[tokio::test]
 async fn semantic_paraphrase_retrieval_persists_and_offline_search_survives_outage() {
     let server = fixture(EmbeddingProvider::OpenAi, "normal").await;
     let (dir, storage, service) = open();
