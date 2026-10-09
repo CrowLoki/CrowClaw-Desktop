@@ -107,7 +107,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
 pub fn image_generation_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "generate_image".into(),
-        description: "Propose generating one image through the signed-in ChatGPT membership. Image generation uses membership capacity; the exact prompt, quality and size will be shown for approval before any image is generated.".into(),
+        description: "Generate one image through the signed-in ChatGPT membership when requested. Image generation uses membership capacity and the chosen quality/size. CrowClaw runs image requests directly unless the owner explicitly enables optional image confirmation.".into(),
         parameters: json!({"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":16384},"quality":{"type":"string","enum":["low","medium","high"],"default":"medium"},"size":{"type":"string","enum":["1024x1024","1536x1024","1024x1536"],"default":"1536x1024"}},"required":["prompt"],"additionalProperties":false}),
     }
 }

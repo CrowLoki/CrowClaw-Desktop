@@ -12,6 +12,31 @@ the conversation, and can update, repair, or uninstall it.
 
 It is not a website, research explainer, command-line-only program, read-only dashboard, renamed SRH-HQRE interface, or public doorway to Orion or Crow's accounts.
 
+## Direct CrowBot AI provider (development candidate)
+
+CrowClaw owns the direct internet client for its CrowBot AI option. It must not
+require a donor project checkout, a second desktop app, a Python/Node runtime,
+Crow's private account, or a locally running gateway. Its default service address
+is fixed HTTPS; optional user-configured gateways remain separate connections.
+The chat path carries the complete supplied roles, personality and history and
+retains CrowClaw's validated native action handling. Image requests run directly
+by default; extra image confirmation is an optional off-by-default preference.
+Local operation settings offer persistent automatic permission as well as
+user-selected confirmation or denial. These are the owner's choices, not
+mandatory repeated permission prompts. Supported picture
+input uses complete OCR and identification readings; neither route prints.
+The native client observes the upstream admission rule, sends no paid API key,
+does not invent account/device/quota entitlements, and does not retry an ambiguous
+request. Internet and the upstream service are required; this is not an offline
+model-weight bundle. A direct chat proof is not acceptance of every separate
+printer, voice, generation or menu operation.
+
+Direct CrowBot AI image generation uses its own anonymous service and pinned
+media download path, not ChatGPT membership or paid API keys. PNG, JPEG and WebP
+outputs retain their original bytes and actual MIME type in the conversation.
+No physical printing is part of image generation. Completed image requests are
+not automatically repeated to answer the same turn.
+
 ## Alpha 1 required experience
 
 1. Install CrowClaw on Windows without Python, Rust, Node.js, or source code being present on the target machine.

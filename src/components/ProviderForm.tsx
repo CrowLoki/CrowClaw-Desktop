@@ -52,7 +52,7 @@ const providers: Array<{
   },
   {
     id: "crowbot-ai", name: "CrowBot AI", description: "Independent printer-derived AI provider",
-    baseUrl: "", model: "crowbot-auto",
+    baseUrl: "https://miaoxue.api.open.ocrmath.com", model: "crowbot-auto",
   },
 ];
 
@@ -72,13 +72,15 @@ export function ProviderForm({
 
   useEffect(() => {
     if (discovered.length === 0 || userModified.current) return;
-    setDraft(discovered[0]);
+    const preferred = discovered.find(candidate => candidate.provider !== "crowbot-ai");
+    if (!preferred) return;
+    setDraft(preferred);
     setTestResult(null);
   }, [discovered]);
 
   function updateDraft(patch: Partial<ModelEndpointDraft>) {
     userModified.current = true;
-    setDraft((current) => ({ ...current, ...patch }));
+    setDraft((current) => ({ ...current, ...patch, ...(patch.baseUrl === "https://miaoxue.api.open.ocrmath.com" ? { apiKey: undefined } : {}) }));
     setTestResult(null);
     setError(null);
   }
@@ -86,13 +88,13 @@ export function ProviderForm({
   function selectProvider(provider: ProviderKind) {
     const preset = providers.find(({ id }) => id === provider);
     if (!preset) return;
-    const detected = discovered.find((candidate) => candidate.provider === provider);
+    const detected = provider === "crowbot-ai" ? undefined : discovered.find((candidate) => candidate.provider === provider);
     updateDraft({
       provider,
       label: detected?.label ?? preset.name,
       baseUrl: detected?.baseUrl ?? preset.baseUrl,
       model: detected?.model ?? preset.model,
-      apiKey: provider === "custom" || provider === "crowbot-ai" ? draft.apiKey : undefined,
+      apiKey: provider === "custom" ? draft.apiKey : undefined,
     });
   }
 
@@ -126,9 +128,9 @@ export function ProviderForm({
   return (
     <div className="provider-form">
       <fieldset className="provider-picker">
-        <legend className="sr-only">Choose a local model provider</legend>
+        <legend className="sr-only">Choose a model provider</legend>
         {providers.map((provider) => {
-          const detected = discovered.some((candidate) => candidate.provider === provider.id);
+          const detected = discovered.some((candidate) => candidate.provider === provider.id && (provider.id !== "crowbot-ai" || candidate.baseUrl === "https://miaoxue.api.open.ocrmath.com"));
           const selected = draft.provider === provider.id;
           return (
             <label className={selected ? "provider-card provider-card--selected" : "provider-card"} key={provider.id}>
@@ -181,7 +183,7 @@ export function ProviderForm({
             autoComplete="off"
           />
         </label>
-        {(draft.provider === "custom" || draft.provider === "crowbot-ai") && (
+        {(draft.provider === "custom" || (draft.provider === "crowbot-ai" && draft.baseUrl !== "https://miaoxue.api.open.ocrmath.com")) && (
           <label className="field field--wide">
             <span>{draft.provider === "crowbot-ai" ? "Gateway key" : "API key"} <small>{draft.provider === "crowbot-ai" ? "Hosted endpoint only; protected on this Windows profile" : "Optional; kept only for this app session"}</small></span>
             <input
@@ -193,7 +195,7 @@ export function ProviderForm({
             />
           </label>
         )}
-        {draft.provider === "crowbot-ai" && <p className="field field--wide">Use the API address in CrowBot AI’s Connection details. Its local port changes when that app restarts. Hosted access needs your own gateway key. Adding this provider does not replace your default model.</p>}
+        {draft.provider === "crowbot-ai" && <p className="field field--wide">The default CrowBot AI connection uses CrowClaw’s own internet client. No other app, project folder or gateway key is needed. Custom local or hosted gateway addresses remain optional. Adding this provider does not replace your default model.</p>}
       </div>
 
       <div className="connection-result" aria-live="polite">

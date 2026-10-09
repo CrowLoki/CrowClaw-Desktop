@@ -11,6 +11,7 @@ type Props = {
   previewAttachment: CrowClawGateway['previewAttachment'];
   onRemove?: (attachmentId: string) => Promise<void>;
   disabled?: boolean;
+  autoPreview?: boolean;
 };
 
 export function attachmentSize(bytes: number): string {
@@ -32,9 +33,9 @@ function visualUrl(preview: Preview): string | null {
   return dataUrl;
 }
 
-export function AttachmentPreview({ attachment, previewAttachment, onRemove, disabled = false }: Props) {
+export function AttachmentPreview({ attachment, previewAttachment, onRemove, disabled = false, autoPreview = false }: Props) {
   const panelId = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(autoPreview && attachment.kind === 'image');
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
