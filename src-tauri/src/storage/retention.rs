@@ -13,8 +13,9 @@ use super::{
 impl Storage {
     /// Returns a transactionally consistent, JSON-serializable copy of all
     /// user-owned durable content. Protected membership credentials and account
-    /// registrations are deliberately outside this export. Legacy provider
-    /// profiles contain only an optional external credential reference.
+    /// registrations and the entire OpenRouter credential table are deliberately
+    /// outside this export. Provider profiles contain only an optional
+    /// credential reference, never the key or its protected blob.
     pub fn export_all(&self) -> StorageResult<StorageExport> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
@@ -24,6 +25,7 @@ impl Storage {
                 let messages = list_messages_from(&transaction, &conversation.id)?;
                 let composer = super::composer::composer_from(&transaction, &conversation.id)?;
                 Ok(ConversationExport {
+                    attachments: super::attachments::export_from(&transaction, &conversation.id)?,
                     conversation,
                     messages,
                     composer: (composer.revision > 0).then_some(composer),
@@ -88,9 +90,11 @@ impl Storage {
             DELETE FROM memory_vectors;
             DELETE FROM memory_embedding_profiles;
             DELETE FROM proposed_actions;
+            DELETE FROM conversation_attachments;
             DELETE FROM messages;
             DELETE FROM tasks;
             DELETE FROM conversations;
+            DELETE FROM openrouter_credentials;
             DELETE FROM provider_profiles;
             DELETE FROM settings;
             DELETE FROM crowquant_memories;
@@ -118,10 +122,12 @@ fn record_count(connection: &Connection) -> StorageResult<u64> {
         r#"SELECT
              (SELECT COUNT(*) FROM settings) +
              (SELECT COUNT(*) FROM provider_profiles) +
+             (SELECT COUNT(*) FROM openrouter_credentials) +
              (SELECT COUNT(*) FROM membership_accounts) +
              (SELECT COUNT(*) FROM membership_host) +
              (SELECT COUNT(*) FROM conversations) +
              (SELECT COUNT(*) FROM conversation_composers) +
+             (SELECT COUNT(*) FROM conversation_attachments) +
              (SELECT COUNT(*) FROM messages) +
              (SELECT COUNT(*) FROM tasks) +
              (SELECT COUNT(*) FROM proposed_actions) +

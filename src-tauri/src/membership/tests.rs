@@ -1,5 +1,6 @@
 use super::*;
 use crate::storage::{RetentionChoice, Storage};
+use base64::Engine;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -29,7 +30,78 @@ fn credentials(identity: &MembershipIdentity, generation: &str) -> MembershipCre
             "chatgpt.tokens.use.direct".into(),
         ],
         access_expires_at_ms: 1_900_000_000_000,
+        codex_images: None,
     }
+}
+
+#[test]
+fn codex_image_oauth_stays_encrypted_and_bound_to_its_chatgpt_account() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path()).unwrap();
+    let identity = identity(&storage, "siwc-registration");
+    let mut saved = credentials(&identity, "base");
+    let account_claim =
+        serde_json::json!({"https://api.openai.com/auth":{"chatgpt_account_id":"acct_synthetic"}});
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&account_claim).unwrap());
+    saved.access_token = format!("header.{payload}.signature");
+    saved.codex_images = Some(CodexImageCredentials {
+        linked_primary_subject: identity.subject.clone(),
+        linked_primary_client_id: identity.client_id.clone(),
+        verified_email: identity.email.clone().unwrap(),
+        issuer: identity.issuer.clone(),
+        subject: "codex-client-scoped-subject".into(),
+        client_id: protocol::CODEX_IMAGE_CLIENT_ID.into(),
+        chatgpt_account_id: Some("acct_synthetic".into()),
+        access_token: format!("header.{payload}.signature"),
+        refresh_token: "SYNTHETIC-CODEX-REFRESH".into(),
+        token_type: "Bearer".into(),
+        access_expires_at_ms: 1_900_000_000_000,
+    });
+    let account = storage
+        .membership_add_account("Personal", &protect_credentials(&identity, &saved).unwrap())
+        .unwrap();
+    let (record, _) = storage
+        .membership_protected_credentials(&account.id)
+        .unwrap();
+    let opened = open_credentials(&record).unwrap();
+    assert_eq!(
+        opened.codex_images.as_ref().unwrap().refresh_token,
+        "SYNTHETIC-CODEX-REFRESH"
+    );
+    assert!(!format!("{record:?} {opened:?}").contains("SYNTHETIC-CODEX"));
+    assert!(!serde_json::to_string(&storage.export_all().unwrap())
+        .unwrap()
+        .contains("SYNTHETIC-CODEX"));
+    let mut foreign = saved;
+    foreign.codex_images.as_mut().unwrap().chatgpt_account_id = Some("acct_other".into());
+    assert!(protect_credentials(&identity, &foreign).is_err());
+    let missing_claim =
+        serde_json::json!({"https://api.openai.com/auth":{"encrypted_auth_metadata":"opaque"}});
+    foreign.access_token = format!(
+        "header.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&missing_claim).unwrap())
+    );
+    foreign.codex_images.as_mut().unwrap().chatgpt_account_id = Some("acct_synthetic".into());
+    assert!(protect_credentials(&identity, &foreign).is_ok());
+    let codex = foreign.codex_images.as_ref().unwrap();
+    assert!(validate_codex_image_routing(codex, &codex.access_token).is_ok());
+    assert!(validate_codex_image_routing(codex, &foreign.access_token).is_err());
+    let other_claim =
+        serde_json::json!({"https://api.openai.com/auth":{"chatgpt_account_id":"acct_other"}});
+    let other_token = format!(
+        "header.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&other_claim).unwrap())
+    );
+    assert!(validate_codex_image_routing(codex, &other_token).is_err());
+    foreign
+        .codex_images
+        .as_mut()
+        .unwrap()
+        .linked_primary_client_id = "another-registration".into();
+    assert!(protect_credentials(&identity, &foreign).is_err());
 }
 pub(super) fn protected(
     identity: &MembershipIdentity,
@@ -539,7 +611,7 @@ fn schema_six_upgrade_adds_vault_without_changing_existing_content() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE conversation_composers; DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
+            "DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; DROP TABLE membership_accounts; DROP TABLE membership_host; PRAGMA user_version=6;",
         )
         .unwrap();
     drop(connection);
@@ -588,7 +660,7 @@ fn schema_seven_upgrade_preserves_registration_and_protected_credentials() {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE conversation_composers; ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
+            "DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; ALTER TABLE membership_accounts DROP COLUMN session_version; PRAGMA user_version=7;",
         )
         .unwrap();
     drop(connection);

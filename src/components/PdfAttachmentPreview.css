@@ -1,0 +1,8 @@
+.pdf-attachment-preview { min-width: 0; }
+.pdf-attachment-preview__navigation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-block: 12px; }
+.pdf-attachment-preview__navigation button { padding: 6px 10px; }
+.pdf-attachment-preview button:disabled { opacity: .5; cursor: default; }
+.pdf-attachment-preview__canvas { max-height: min(260px, 35vh); overflow: auto; }
+.pdf-attachment-preview__canvas canvas { display: block; max-width: 100%; height: auto; background: white; }
+.pdf-attachment-preview pre { max-height: 130px; overflow: auto; user-select: text; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pdf-attachment-preview summary { cursor: pointer; padding-block: 8px; }

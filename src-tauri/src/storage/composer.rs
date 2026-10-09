@@ -6,7 +6,8 @@ use super::{
     StorageResult, StoredTask, TaskInput,
 };
 
-pub const MAX_DRAFT_BYTES: usize = 1024 * 1024;
+// Storage admission is a UTF-8 byte guard, not a model token-capacity promise.
+pub const MAX_DRAFT_BYTES: usize = 16 * 1024 * 1024;
 
 /// A next-turn choice references CrowClaw-owned connection configuration, never
 /// credentials. Submitted tasks must retain their own immutable copy of this value.
@@ -25,6 +26,8 @@ pub struct ConversationComposer {
     pub revision: u32,
     pub draft: String,
     pub selection: Option<ConversationModelChoice>,
+    #[serde(default)]
+    pub attachments: Vec<super::attachments::AttachmentSummary>,
 }
 
 impl Storage {
@@ -39,7 +42,6 @@ impl Storage {
     ) -> StorageResult<(Message, StoredTask, ConversationComposer)> {
         require_non_empty("conversation id", &composer.conversation_id)?;
         require_non_empty("message id", &message.id)?;
-        require_non_empty("message content", &message.content)?;
         require_non_empty("task id", &task.id)?;
         if message.conversation_id != composer.conversation_id
             || task.conversation_id.as_deref() != Some(composer.conversation_id.as_str())
@@ -64,12 +66,16 @@ impl Storage {
         let current = composer_from(&transaction, &composer.conversation_id)?;
         if current.revision != composer.revision
             || current.selection != composer.selection
+            || current.attachments != composer.attachments
             || current.revision >= i32::MAX as u32
         {
             return Err(StorageError::Conflict(
                 "This conversation changed; refresh its draft and model choice before sending"
                     .into(),
             ));
+        }
+        if current.attachments.is_empty() {
+            require_non_empty("message content", &message.content)?;
         }
         let selection = current.selection.as_ref().ok_or_else(|| {
             StorageError::InvalidData("Choose a conversation model before sending".into())
@@ -78,6 +84,26 @@ impl Storage {
         metadata.insert("modelSelection".into(), snapshot.clone());
         payload.insert("modelSelection".into(), snapshot);
         payload.insert("composerRevision".into(), current.revision.into());
+        let mut submitted = current.attachments.clone();
+        for attachment in &mut submitted {
+            attachment.message_id = Some(message.id.clone());
+        }
+        // Preserve the legacy text-only shape, and never retain caller-forged
+        // attachment claims when there are no authoritative draft snapshots.
+        metadata.remove("attachments");
+        payload.remove("attachmentIds");
+        if !submitted.is_empty() {
+            metadata.insert("attachments".into(), serde_json::to_value(&submitted)?);
+            payload.insert(
+                "attachmentIds".into(),
+                serde_json::to_value(
+                    submitted
+                        .iter()
+                        .map(|attachment| &attachment.id)
+                        .collect::<Vec<_>>(),
+                )?,
+            );
+        }
         message.metadata = metadata.into();
         task.payload = payload.into();
         let now = now_ms()?;
@@ -110,6 +136,10 @@ impl Storage {
             &task,
             &serde_json::to_string(&task.payload)?,
             now,
+        )?;
+        transaction.execute(
+            "UPDATE conversation_attachments SET message_id=?2 WHERE conversation_id=?1 AND message_id IS NULL",
+            params![current.conversation_id, message.id],
         )?;
         transaction.execute(
             "UPDATE conversation_composers SET draft='', revision=?2, updated_at_ms=?3 WHERE conversation_id=?1",
@@ -191,6 +221,7 @@ impl Storage {
             revision: current.revision + 1,
             draft: draft.into(),
             selection: selection.cloned(),
+            attachments: current.attachments,
         };
         transaction.execute(
             "INSERT INTO conversation_composers(conversation_id,revision,draft,selection_json,updated_at_ms)
@@ -240,5 +271,6 @@ pub(super) fn composer_from(
         selection: selection
             .map(|json| serde_json::from_str(&json))
             .transpose()?,
+        attachments: super::attachments::draft_summaries(connection, id)?,
     })
 }

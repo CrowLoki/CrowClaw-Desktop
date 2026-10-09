@@ -12,6 +12,7 @@ async function fixture(t) {
   const url = `http://127.0.0.1:${server.address().port}`;
   return {
     send: messages => fetch(`${url}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "crowclaw-acceptance-model", messages }) }),
+    embed: input => fetch(`${url}/v1/embeddings`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "crowclaw-acceptance-model", input }) }),
     evidence: async () => (await fetch(`${url}/__acceptance/memory`)).json(),
   };
 }
@@ -49,6 +50,16 @@ test("ordinary chat remains available without enabling the packaged probes", asy
   assert.equal(response.status, 200);
   assert.equal((await response.json()).choices[0].message.content, "CrowClaw acceptance response: CI baseline");
   assert.deepEqual(await api.evidence(), { deniedWithoutDisclosure: 0, approvedSources: [], violations: 0 });
+});
+
+test("semantic fixture relates the paraphrase to the telescope but not the garden note", async t => {
+  const api = await fixture(t);
+  const response = await api.embed(["distant galaxy observation", "CI native telescope cobalt record", "CI native garden tulip record"]);
+  assert.equal(response.status, 200);
+  const { data } = await response.json();
+  assert.deepEqual(data[0].embedding, data[1].embedding);
+  assert.notDeepEqual(data[0].embedding, data[2].embedding);
+  assert.equal(data[0].embedding.length, 3);
 });
 
 test("the actual fixture CLI starts on its assigned loopback port", { timeout: 5000 }, async t => {

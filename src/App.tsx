@@ -5,6 +5,7 @@ import { AppShell, type AppView } from "./components/AppShell";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { ConnectionsView } from "./components/ConnectionsView";
+import { OpenRouterConnection } from './components/OpenRouterConnection';
 import { ConversationSidebar } from "./components/ConversationSidebar";
 import { ErrorScreen } from "./components/ErrorScreen";
 import { EvolutionView } from "./components/EvolutionView";
@@ -29,6 +30,7 @@ import type {
   DiscoveredEndpoint,
   MemoryRecord,
   ModelEndpointDraft,
+  ModelConnection,
   SelectedFolder,
 } from "./gateway/contracts";
 import { createCrowClawGateway } from "./gateway/gateway";
@@ -176,6 +178,21 @@ export function App({ gateway = defaultGateway }: AppProps) {
     const connection = await gateway.connectModel(draft);
     setBootstrap((current) => current ? { ...current, firstRun: false, connection } : current);
     if (!bootstrap || bootstrap.firstRun) await loadApp();
+  }
+
+  async function openRouterConnected(connection: ModelConnection, useCurrentChat: boolean) {
+    setBootstrap(current => current ? { ...current, firstRun: false, connection } : current);
+    if (bootstrap?.firstRun && bootstrap.selectedConversationId) {
+      await loadConversation(bootstrap.selectedConversationId);
+    }
+    if (useCurrentChat && conversation) {
+      await composer.choose({ providerProfileId: connection.id, model: connection.model, reasoningEffort: null });
+    }
+  }
+
+  function openRouterDisconnected(profileId: string) {
+    setBootstrap(current => current?.connection?.provider === 'openrouter' && current.connection.id === profileId
+      ? { ...current, connection: { ...current.connection, status: 'disconnected', connectedAt: null, latencyMs: null } } : current);
   }
 
   async function createConversation() {
@@ -329,7 +346,9 @@ export function App({ gateway = defaultGateway }: AppProps) {
         discoverEndpoints={discoverEndpoints}
         testConnection={(draft) => gateway.testConnection(draft)}
         connect={connectModel}
-        membership={<MembershipAccounts membership={membership} connection={bootstrap.connection} />}
+        membership={<><MembershipAccounts membership={membership} connection={bootstrap.connection} gateway={gateway} />
+          <OpenRouterConnection gateway={gateway} connection={bootstrap.connection} hasConversation={false} onConnected={openRouterConnected} onDisconnected={openRouterDisconnected} browserPreview={!isTauriRuntime()} />
+        </>}
       />
       <MembershipWelcome membership={membership} /></>
     );
@@ -365,6 +384,12 @@ export function App({ gateway = defaultGateway }: AppProps) {
           sending={sending}
           error={operationError ?? (conversation ? sendErrors[conversation.id] : null) ?? composer.error ?? composer.snapshot?.warning ?? null}
           draft={composer.draft}
+          attachments={composer.attachments}
+          attachmentsBusy={composer.saving}
+          developmentPreview={!isTauriRuntime() && import.meta.env.DEV}
+          onSelectAttachments={composer.selectAttachments}
+          onRemoveAttachment={composer.removeAttachment}
+          previewAttachment={gateway.previewAttachment}
           onDraftChange={composer.setDraft}
           composerLoading={conversationLoading || composer.loading}
           selectedFolder={conversation ? conversationFolders[conversation.id] ?? null : null}
@@ -392,6 +417,11 @@ export function App({ gateway = defaultGateway }: AppProps) {
       )}
       {view === "connections" && (
         <ConnectionsView
+          gateway={gateway}
+          hasConversation={conversation !== null}
+          onOpenRouterConnected={openRouterConnected}
+          onOpenRouterDisconnected={openRouterDisconnected}
+          browserPreview={!isTauriRuntime()}
           connection={bootstrap.connection}
           discovered={discovered}
           onTest={(draft): Promise<ConnectionTestResult> => gateway.testConnection(draft)}
@@ -399,7 +429,7 @@ export function App({ gateway = defaultGateway }: AppProps) {
         />
       )}
       {view === "evolution" && <EvolutionView gateway={gateway} connection={bootstrap.connection} developmentPreview={!isTauriRuntime() && import.meta.env.DEV} />}
-      {view === "settings" && <SettingsView settings={bootstrap.settings} onSave={saveSettings} membership={<MembershipAccounts membership={membership} connection={bootstrap.connection} />} />}
+      {view === "settings" && <SettingsView settings={bootstrap.settings} onSave={saveSettings} membership={<MembershipAccounts membership={membership} connection={bootstrap.connection} gateway={gateway} />} />}
       {bootstrap.pendingActions[0] && (
         <ApprovalDialog action={bootstrap.pendingActions[0]} deciding={deciding} onDecision={(decision) => void decideAction(decision)} />
       )}

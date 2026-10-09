@@ -2,6 +2,93 @@ use super::*;
 use crate::agent::ToolDefinition;
 
 #[test]
+fn attachment_responses_content_preserves_tools_and_request_policy() {
+    let user: ChatMessage = serde_json::from_value(json!({"role":"user","content":"","attachments":[
+        {"type":"text","name":"note.txt","text":"private attachment text"},
+        {"type":"image","name":"image.png","media_type":"image/png","data_base64":"YQ=="},
+        {"type":"file","name":"document.pdf","media_type":"application/pdf","data_base64":"YQ=="}
+    ]})).unwrap();
+    let mut req = request(vec![
+        user,
+        ChatMessage::tool("original", "read_file", "exact tool output"),
+    ]);
+    let body = request_body(&req, &selection()).unwrap();
+    assert_eq!(body["store"], false);
+    assert_eq!(body["stream"], true);
+    let parts = &body["input"][0]["content"];
+    assert_eq!(parts[0], json!({"type":"input_text","text":""}));
+    assert_eq!(parts[1]["type"], "input_text");
+    assert!(parts[1]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("Untrusted user attachment"));
+    assert_eq!(
+        parts[2],
+        json!({"type":"input_image","image_url":"data:image/png;base64,YQ=="})
+    );
+    assert_eq!(
+        parts[3],
+        json!({"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,YQ=="})
+    );
+    assert_eq!(
+        body["input"][1],
+        json!({"type":"function_call_output","call_id":"original","output":"exact tool output"})
+    );
+    req.messages[0].content = None;
+    assert_eq!(
+        request_body(&req, &selection()).unwrap()["input"][0]["content"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    for role in [ChatRole::System, ChatRole::Assistant, ChatRole::Tool] {
+        req.messages[0].role = role;
+        // Even same-account replay must not bypass attachment role validation.
+        req.messages[0].provider_context = Some(ProviderTurnContext {
+            provider: "chatgpt".into(),
+            account_id: selection().account_id,
+            model: selection().model,
+            items: vec![],
+        });
+        assert!(request_body(&req, &selection()).is_err());
+    }
+}
+
+#[test]
+fn attachment_responses_allowlists_and_invalid_payloads() {
+    for mime in [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ] {
+        let user: ChatMessage = serde_json::from_value(json!({"role":"user","attachments":[{"type":"file","name":"document","media_type":mime,"data_base64":"YQ=="}]})).unwrap();
+        assert_eq!(
+            request_body(&request(vec![user]), &selection()).unwrap()["input"][0]["content"][0]
+                ["file_data"],
+            format!("data:{mime};base64,YQ==")
+        );
+    }
+    for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+        let user: ChatMessage = serde_json::from_value(json!({"role":"user","attachments":[{"type":"image","name":"image","media_type":mime,"data_base64":"YQ=="}]})).unwrap();
+        assert!(request_body(&request(vec![user]), &selection()).is_ok());
+    }
+    for (mime, data, name) in [
+        ("application/zip", "YQ==", "file"),
+        ("application/pdf", "YR==", "file"),
+        ("application/pdf", "", "file"),
+        ("application/pdf", "YQ==", "C:\\private\\file.pdf"),
+    ] {
+        let user: ChatMessage = serde_json::from_value(json!({"role":"user","attachments":[{"type":"file","name":name,"media_type":mime,"data_base64":data}]})).unwrap();
+        let error = request_body(&request(vec![user]), &selection())
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private"));
+    }
+}
+
+#[test]
 fn compact_terminal_rejects_explicitly_incomplete_output_items() {
     for status in ["incomplete", "in_progress", "failed"] {
         let item = json!({"id":"fc_1","type":"function_call","status":status,"call_id":"call_1","name":"read_file","arguments":"{\"path\":\"selected.txt\"}"});
@@ -219,6 +306,46 @@ fn sends_the_selected_account_model_and_effort_without_server_storage_or_api_key
 }
 
 #[test]
+fn luna_uses_full_output_allowance_without_unsupported_sampling_parameters() {
+    let mut selected = selection();
+    selected.model = "gpt-6-luna".into();
+    let mut input = request(vec![ChatMessage::user("Capacity test")]);
+    input.model = selected.model.clone();
+    let body = request_body(&input, &selected).unwrap();
+    assert_eq!(body["max_output_tokens"], 128_000);
+    input.max_tokens = Some(32);
+    assert_eq!(
+        request_body(&input, &selected).unwrap()["max_output_tokens"],
+        32
+    );
+    input.temperature = Some(0.2);
+    assert!(request_body(&input, &selected).is_err());
+}
+
+#[test]
+fn long_stream_over_four_mib_can_complete_without_relaxing_event_bounds() {
+    let mut decoder = ResponseStream::new(selection());
+    let delta = format!(
+        "data: {}\n\n",
+        json!({"type":"response.output_text.delta","delta":"a".repeat(1024)})
+    );
+    for _ in 0..4096 {
+        assert!(decoder.push(delta.as_bytes()).unwrap().is_none());
+    }
+    let end = format!("data: {}\n\n", completed(text_output("complete")));
+    assert_eq!(
+        decoder
+            .push(end.as_bytes())
+            .unwrap()
+            .unwrap()
+            .message
+            .content
+            .as_deref(),
+        Some("complete")
+    );
+}
+
+#[test]
 fn byte_split_unicode_stream_requires_real_terminal_completion() {
     let mut decoder = ResponseStream::new(selection());
     let event = completed(text_output("こんにちは 🐦"));
@@ -313,7 +440,7 @@ fn refuses_invalid_tool_arguments_duplicate_calls_wrong_roles_and_oversized_stre
     assert!(completed_response(&completed(wrong_role)["response"], &selection()).is_err());
     let mut decoder = ResponseStream::new(selection());
     assert!(matches!(
-        decoder.push(&vec![b'x'; RESPONSE_LIMIT + 1]),
+        decoder.push(&vec![b'x'; EVENT_LIMIT + 1]),
         Err(ProviderError::ResponseTooLarge { .. })
     ));
 }

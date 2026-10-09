@@ -4,6 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import { ApprovalDialog } from "./ApprovalDialog";
 
 describe("ApprovalDialog", () => {
+  it("identifies membership image generation and displays the exact usage request", () => {
+    render(<ApprovalDialog action={{id:"image-action",taskId:"task-1",conversationId:"conversation-1",kind:"image-generation",title:"Generate an image with ChatGPT",summary:"Generate one 1536x1024 medium-quality image",target:"ChatGPT image generation for this connected account",details:["Generate one image from the exact prompt: \"a purple crow\"","This request uses the connected ChatGPT membership's image-generation capacity"],risk:"medium",requestedAt:"2026-10-09T00:00:00.000Z"}} deciding={null} onDecision={vi.fn()} />);
+    expect(screen.getByRole("heading",{name:"Generate an image with ChatGPT"})).toBeVisible();
+    expect(screen.getByText("Requested membership image generation")).toBeVisible();
+    expect(screen.getByText(/connected ChatGPT membership/)).toBeVisible();
+    expect(screen.getByRole("button",{name:"Approve once"})).toBeVisible();
+  });
   it("shows the exact CrowQuant search boundary as a medium-risk memory action", () => {
     render(
       <ApprovalDialog

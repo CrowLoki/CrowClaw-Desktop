@@ -65,6 +65,13 @@ pub enum ToolRequest {
         #[serde(default = "default_memory_search_limit")]
         limit: usize,
     },
+    GenerateImage {
+        prompt: String,
+        #[serde(default = "default_image_quality")]
+        quality: String,
+        #[serde(default = "default_image_size")]
+        size: String,
+    },
 }
 
 pub const MEMORY_TEXT_MAX_BYTES: usize = 16 * 1024;
@@ -72,6 +79,13 @@ pub const MEMORY_QUERY_MAX_BYTES: usize = 4096;
 
 fn default_memory_search_limit() -> usize {
     5
+}
+
+fn default_image_quality() -> String {
+    "medium".into()
+}
+fn default_image_size() -> String {
+    "1536x1024".into()
 }
 
 impl ToolRequest {
@@ -82,6 +96,7 @@ impl ToolRequest {
             Self::RunCommand { .. } => "run_command",
             Self::RememberMemory { .. } => "remember_memory",
             Self::SearchMemory { .. } => "search_memory",
+            Self::GenerateImage { .. } => "generate_image",
         }
     }
 
@@ -106,6 +121,7 @@ impl ToolRequest {
             Self::SearchMemory { query, limit } => format!(
                 "Search indexed CrowClaw conversations, notes, admitted files and enabled action summaries for {query:?}; return up to {limit} results"
             ),
+            Self::GenerateImage { prompt, quality, size } => format!("Generate one {size} {quality}-quality image from: {prompt:?}"),
         }
     }
 
@@ -137,6 +153,15 @@ impl ToolRequest {
             query: String,
             #[serde(default = "default_memory_search_limit")]
             limit: usize,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct GenerateImageArguments {
+            prompt: String,
+            #[serde(default = "default_image_quality")]
+            quality: String,
+            #[serde(default = "default_image_size")]
+            size: String,
         }
 
         let invalid = |error: serde_json::Error| ToolError::InvalidRequest {
@@ -213,6 +238,37 @@ impl ToolRequest {
                 Ok(Self::SearchMemory {
                     query: query.into(),
                     limit: parsed.limit,
+                })
+            }
+            "generate_image" => {
+                let parsed: GenerateImageArguments =
+                    serde_json::from_value(arguments).map_err(invalid)?;
+                let prompt = parsed.prompt.trim();
+                if prompt.is_empty() || prompt.len() > 16 * 1024 {
+                    return Err(ToolError::InvalidRequest {
+                        tool_name: tool_name.into(),
+                        message: "prompt must contain 1 to 16384 UTF-8 bytes".into(),
+                    });
+                }
+                if !matches!(parsed.quality.as_str(), "low" | "medium" | "high") {
+                    return Err(ToolError::InvalidRequest {
+                        tool_name: tool_name.into(),
+                        message: "quality must be low, medium or high".into(),
+                    });
+                }
+                if !matches!(
+                    parsed.size.as_str(),
+                    "1024x1024" | "1536x1024" | "1024x1536"
+                ) {
+                    return Err(ToolError::InvalidRequest {
+                        tool_name: tool_name.into(),
+                        message: "size must be 1024x1024, 1536x1024 or 1024x1536".into(),
+                    });
+                }
+                Ok(Self::GenerateImage {
+                    prompt: prompt.into(),
+                    quality: parsed.quality,
+                    size: parsed.size,
                 })
             }
             _ => Err(ToolError::InvalidRequest {
@@ -299,6 +355,31 @@ pub enum ToolOutput {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<String>,
     },
+    GeneratedImage {
+        image: GeneratedImage,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImage {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub model: String,
+    #[serde(skip)]
+    pub bytes: Vec<u8>,
+}
+impl std::fmt::Debug for GeneratedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedImage")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("media_type", &self.media_type)
+            .field("model", &self.model)
+            .field("bytes", &format!("[image bytes: {}]", self.bytes.len()))
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -381,5 +462,25 @@ mod tests {
             json!({ "query": "memory", "limit": 21 }),
         )
         .is_err());
+    }
+
+    #[test]
+    fn image_generation_requests_validate_prompt_quality_and_size() {
+        assert_eq!(
+            ToolRequest::from_model_call("generate_image", json!({"prompt":"  cat  "})).unwrap(),
+            ToolRequest::GenerateImage {
+                prompt: "cat".into(),
+                quality: "medium".into(),
+                size: "1536x1024".into()
+            }
+        );
+        for arguments in [
+            json!({"prompt":" "}),
+            json!({"prompt":"cat","quality":"premium"}),
+            json!({"prompt":"cat","size":"arbitrary"}),
+            json!({"prompt":"cat","extra":true}),
+        ] {
+            assert!(ToolRequest::from_model_call("generate_image", arguments).is_err());
+        }
     }
 }

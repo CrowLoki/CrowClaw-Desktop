@@ -1,4 +1,5 @@
-mod protection;
+pub(crate) mod images;
+pub(crate) mod protection;
 pub(crate) mod protocol;
 pub(crate) mod responses;
 pub(crate) mod service;
@@ -19,6 +20,82 @@ pub(crate) struct MembershipCredentials {
     pub token_type: String,
     pub scopes: Vec<String>,
     pub access_expires_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_images: Option<CodexImageCredentials>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CodexImageCredentials {
+    pub linked_primary_subject: String,
+    pub linked_primary_client_id: String,
+    pub verified_email: String,
+    pub issuer: String,
+    pub subject: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub chatgpt_account_id: Option<String>,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub access_expires_at_ms: i64,
+}
+impl std::fmt::Debug for CodexImageCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexImageCredentials")
+            .field("tokens", &"[redacted]")
+            .finish()
+    }
+}
+
+fn validate_codex_image_credentials(
+    identity: &MembershipIdentity,
+    primary_access_token: &str,
+    credentials: &CodexImageCredentials,
+) -> Result<(), String> {
+    validate_codex_image_routing(credentials, &credentials.access_token)?;
+    let valid = |token: &str| {
+        !token.trim().is_empty()
+            && token.len() <= 128 * 1024
+            && !token.chars().any(char::is_control)
+    };
+    let primary_account_id = protocol::chatgpt_account_id_from_oauth_token(primary_access_token)?;
+    let same_account = match (
+        primary_account_id.as_deref(),
+        credentials.chatgpt_account_id.as_deref(),
+    ) {
+        (Some(primary), Some(codex)) => primary == codex,
+        _ => true,
+    };
+    if credentials.issuer != identity.issuer
+        || !same_account
+        || credentials.linked_primary_subject != identity.subject
+        || credentials.linked_primary_client_id != identity.client_id
+        || identity.email.as_deref() != Some(credentials.verified_email.as_str())
+        || credentials.subject.trim().is_empty()
+        || credentials.client_id != protocol::CODEX_IMAGE_CLIENT_ID
+        || credentials.token_type != "Bearer"
+        || !valid(&credentials.access_token)
+        || !valid(&credentials.refresh_token)
+        || credentials.access_expires_at_ms <= 0
+    {
+        return Err(
+            "The Codex image authorization does not match this saved ChatGPT account".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_codex_image_routing(
+    credentials: &CodexImageCredentials,
+    access_token: &str,
+) -> Result<(), String> {
+    if protocol::chatgpt_account_id_from_oauth_token(access_token)?
+        != credentials.chatgpt_account_id
+    {
+        return Err("The image credential changed its saved account routing".into());
+    }
+    Ok(())
 }
 impl std::fmt::Debug for MembershipCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,6 +135,9 @@ pub(crate) fn protect_credentials(
     {
         return Err("The granted scopes do not authorize this account's ChatGPT plan usage".into());
     }
+    if let Some(codex) = &credentials.codex_images {
+        validate_codex_image_credentials(identity, &credentials.access_token, codex)?;
+    }
     let bytes = serde_json::to_vec(credentials)
         .map_err(|_| "Could not serialize the private credential record")?;
     if bytes.len() > 1024 * 1024 {
@@ -86,6 +166,9 @@ pub(crate) fn open_credentials(
     {
         return Err("Saved credentials are bound to a different registration".into());
     }
+    if let Some(codex) = &credentials.codex_images {
+        validate_codex_image_credentials(&record.identity, &credentials.access_token, codex)?;
+    }
     Ok(credentials)
 }
 
@@ -104,3 +187,6 @@ fn registration_entropy(identity: &MembershipIdentity) -> Result<Vec<u8>, String
 
 #[cfg(all(test, windows))]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod live_probe;

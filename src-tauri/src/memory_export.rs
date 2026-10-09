@@ -86,7 +86,25 @@ mod tests {
                 metadata: serde_json::Value::Null,
             })
             .unwrap();
+        storage
+            .add_composer_attachments(
+                "conversation",
+                0,
+                &[crate::storage::attachments::AttachmentInput {
+                    id: "draft-file".into(),
+                    name: "note.txt".into(),
+                    media_type: "text/plain".into(),
+                    kind: crate::storage::attachments::AttachmentKind::Text,
+                    bytes: b"retained attachment".to_vec(),
+                }],
+            )
+            .unwrap();
         let exported = snapshot(&storage).unwrap();
+        let attachment: crate::storage::attachments::AttachmentRecord =
+            serde_json::from_value(exported["conversations"][0]["attachments"][0].clone()).unwrap();
+        assert_eq!(attachment.bytes, b"retained attachment");
+        assert_eq!(attachment.summary.name, "note.txt");
+        assert_eq!(attachment.summary.message_id, None);
         assert_eq!(exported["crowquantMemories"][0]["id"], note.id);
         assert_eq!(
             exported["crowquantMemories"][0]["text"],

@@ -388,6 +388,83 @@ async (page) => {
     Invoke-NativeUi @('screenshot', ('--filename=' + (Join-Path $qaEvidence 'installed-memory-approval.png')))
 }
 
+function Assert-InstalledSemanticRecall {
+    param([ValidateSet('user_note','legacy_crowquant')][string]$NoteKind)
+    $qaProgram = @'
+async (page) => {
+  await page.getByRole("button",{name:"Memory",exact:true}).click();
+  const panel=page.locator("[aria-labelledby=native-memory-title]");
+  await panel.getByRole("combobox",{name:"Source",exact:true}).selectOption("__NOTE_KIND__");
+  const search=async(mode,query)=>{
+    await panel.getByRole("combobox",{name:"Search method",exact:true}).selectOption(mode);
+    await panel.getByLabel("Search previous context",{exact:true}).fill(query);
+    await panel.getByRole("button",{name:"Search context",exact:true}).click();
+    await panel.locator("article.memory-card").first().getByText("CI native telescope cobalt record",{exact:true}).waitFor();
+  };
+  await search("lexical","cobalt");
+  await panel.locator("article.memory-card").first().getByText("Lexical match",{exact:true}).waitFor();
+  await panel.getByLabel("Enable a local embedding profile",{exact:true}).check();
+  await panel.getByRole("combobox",{name:"Embedding protocol",exact:true}).selectOption("openai");
+  await panel.getByLabel("Local embedding endpoint",{exact:true}).fill("http://127.0.0.1:32123/v1");
+  await panel.getByLabel("Embedding model identifier",{exact:true}).fill("crowclaw-acceptance-model");
+  await panel.getByLabel("Model output dimensions",{exact:true}).fill("3");
+  await panel.getByRole("button",{name:"Save semantic profile",exact:true}).click();
+  await panel.getByText("Local memory settings saved.",{exact:true}).waitFor();
+  await panel.getByRole("button",{name:"Update semantic index",exact:true}).click();
+  await panel.getByText(/^Stored \d+ semantic vectors;/).waitFor();
+  await search("semantic","distant galaxy observation");
+  await panel.locator("article.memory-card").first().getByText("Semantic match",{exact:true}).waitFor();
+}
+'@
+    Invoke-NativeUi @('run-code',$qaProgram.Replace('__NOTE_KIND__',$NoteKind))
+    $script:qaChecks.lexicalAndSemanticRecall=$true
+}
+
+function Assert-InstalledSemanticFallback {
+    param([ValidateSet('user_note','legacy_crowquant')][string]$NoteKind)
+    $qaProgram = @'
+async (page) => {
+  const panel=page.locator("[aria-labelledby=native-memory-title]");
+  await panel.getByRole("combobox",{name:"Source",exact:true}).selectOption("__NOTE_KIND__");
+  await panel.getByRole("combobox",{name:"Search method",exact:true}).selectOption("semantic");
+  await panel.getByLabel("Search previous context",{exact:true}).fill("cobalt");
+  await panel.getByRole("button",{name:"Search context",exact:true}).click();
+  await panel.getByText(/Used offline keyword and CrowQuant retrieval/).first().waitFor();
+  await panel.locator("article.memory-card").first().getByText("CI native telescope cobalt record",{exact:true}).waitFor();
+}
+'@
+    Invoke-NativeUi @('run-code',$qaProgram.Replace('__NOTE_KIND__',$NoteKind))
+    $script:qaChecks.visibleSemanticFallback=$true
+}
+
+function Assert-InstalledWithdrawal {
+    param([ValidateSet('user_note','legacy_crowquant')][string]$NoteKind,[bool]$AlreadyWithdrawn=$false)
+    $qaProgram = @'
+async (page) => {
+  await page.getByRole("button",{name:"Memory",exact:true}).click();
+  const panel=page.locator("[aria-labelledby=native-memory-title]");
+  const note="CI native telescope cobalt record";
+  await panel.getByRole("combobox",{name:"Source",exact:true}).selectOption("__NOTE_KIND__");
+  await panel.getByRole("combobox",{name:"Search method",exact:true}).selectOption("full_text");
+  await panel.getByLabel("Search previous context",{exact:true}).fill("cobalt");
+  if (!__ALREADY_WITHDRAWN__) {
+    await panel.getByRole("button",{name:"Search context",exact:true}).click();
+    const result=panel.locator("article.memory-card").filter({has:page.getByText(note,{exact:true})});
+    await result.getByRole("button",{name:"Forget from search",exact:true}).click();
+    await panel.getByText("Removed from memory search. The original conversation or note is retained.",{exact:true}).waitFor();
+  }
+  await panel.getByRole("button",{name:"Rebuild search index",exact:true}).click();
+  await panel.getByText(/^Rebuilt \d+ sources;/).waitFor();
+  await panel.getByRole("button",{name:"Search context",exact:true}).click();
+  await panel.getByText("No matching indexed context. Check source filters and indexing settings.",{exact:true}).waitFor();
+  await page.locator("article.crowquant-card").getByText(note,{exact:true}).waitFor();
+}
+'@
+    Invoke-NativeUi @('run-code',$qaProgram.Replace('__NOTE_KIND__',$NoteKind).Replace('__ALREADY_WITHDRAWN__',$AlreadyWithdrawn.ToString().ToLowerInvariant()))
+    if ($AlreadyWithdrawn) { $script:qaChecks.withdrawalSurvivesRestart=$true }
+    else { $script:qaChecks.withdrawalRetainsOriginal=$true }
+}
+
 function Assert-InstalledRegistration([string]$Version) {
     $qaReg = Get-ItemProperty -LiteralPath $qaRegistration
     if ($qaReg.DisplayVersion -ne $Version -or $qaReg.InstallLocation.Trim('"') -ne $qaInstall) {
@@ -504,10 +581,17 @@ try {
     Invoke-NativeUi @('screenshot', '--filename=output/playwright/installed-memory-after-restart.png')
     Start-ModelFixture
     Assert-InstalledMemoryApproval -NoteKind $qaNoteKind
+    Assert-InstalledMemoryAudit -NoteKind $qaNoteKind
+    Assert-InstalledSemanticRecall -NoteKind $qaNoteKind
     if (-not $qaModel.HasExited) { $qaModel.Kill(); $qaModel.WaitForExit(5000) | Out-Null }
     $qaModel = $null
+    Assert-InstalledSemanticFallback -NoteKind $qaNoteKind
+    Assert-InstalledWithdrawal -NoteKind $qaNoteKind
     Stop-InstalledApp
-    Assert-InstalledMemoryAudit -NoteKind $qaNoteKind
+    Start-InstalledApp
+    Assert-InstalledWithdrawal -NoteKind $qaNoteKind -AlreadyWithdrawn $true
+    Assert-NativeRuntime
+    Stop-InstalledApp
     $qaBefore = Get-DataHashes
     if (-not [IO.Path]::GetFullPath($qaUninstaller).StartsWith($qaRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Uninstaller escaped its owned directory.' }
     # Use normal NSIS self-removal. _?= suppresses its temporary copy and can

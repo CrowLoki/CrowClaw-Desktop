@@ -9,6 +9,56 @@ const invokeMock = vi.mocked(invoke);
 describe("Tauri command contract", () => {
   beforeEach(() => invokeMock.mockReset());
 
+  it('uses dedicated OpenRouter envelopes and preserves the backend free-only catalog without guessed model choices', async () => {
+    const gateway = createTauriGateway();
+    const catalog = { models: [{ id: 'returned-free-id', name: 'Returned name', contextLength: 4096, inputModalities: ['text'], supportedParameters: ['tools'], reasoningEfforts: [] }], fetchedAtMs: 123 };
+    invokeMock.mockResolvedValue(catalog);
+    await expect(gateway.openRouterCatalog()).resolves.toEqual(catalog);
+    await expect(gateway.openRouterCatalog('openrouter:one')).resolves.toEqual(catalog);
+    const request = { label: 'Free', apiKey: 'test-key', model: 'returned-free-id' };
+    await gateway.connectOpenRouter(request);
+    await gateway.disconnectOpenRouter('openrouter:one');
+    expect(invokeMock.mock.calls).toEqual([
+      ['crowclaw_openrouter_catalog', { request: { profileId: null } }],
+      ['crowclaw_openrouter_catalog', { request: { profileId: 'openrouter:one' } }],
+      ['crowclaw_openrouter_connect', { request }],
+      ['crowclaw_openrouter_disconnect', { request: { profileId: 'openrouter:one' } }],
+    ]);
+  });
+
+  it('uses attachment request envelopes with only native identifiers and revisions', async () => {
+    const gateway = createTauriGateway();
+    const snapshot = { composer: { conversationId: 'chat-a', revision: 8, draft: '', selection: null, attachments: [] }, connection: null, sources: [], warning: null };
+    invokeMock.mockResolvedValue(snapshot);
+    await expect(gateway.selectAttachments('chat-a', 7)).resolves.toEqual(snapshot);
+    await expect(gateway.removeAttachment('chat-a', 8, 'attachment-a')).resolves.toEqual(snapshot);
+    const attachment = { id: 'attachment-a', conversationId: 'chat-a', messageId: null, name: 'note.txt', mediaType: 'text/plain', kind: 'text', byteLength: 5, sha256: 'abc', createdAtMs: 123 };
+    invokeMock.mockResolvedValueOnce({ attachment, text: 'hello', dataUrl: null });
+    await expect(gateway.previewAttachment('chat-a', 'attachment-a')).resolves.toEqual({ attachment, text: 'hello', dataUrl: null });
+    expect(invokeMock.mock.calls).toEqual([
+      ['crowclaw_attachments_select', { request: { conversationId: 'chat-a', revision: 7 } }],
+      ['crowclaw_attachment_remove', { request: { conversationId: 'chat-a', revision: 8, attachmentId: 'attachment-a' } }],
+      ['crowclaw_attachment_preview', { request: { conversationId: 'chat-a', attachmentId: 'attachment-a' } }],
+    ]);
+  });
+
+  it('maps retained draft and sent attachment metadata after recreating the gateway', async () => {
+    const attachment = { id: 'file-1', conversationId: 'chat-a', messageId: null, name: 'notes.txt', mediaType: 'text/plain', kind: 'text', byteLength: 32, sha256: 'hash', createdAtMs: 123 };
+    const composer = { conversationId: 'chat-a', revision: 9, draft: '', selection: null, attachments: [attachment] };
+    invokeMock.mockResolvedValueOnce({ composer, connection: null, sources: [], warning: null });
+    expect((await createTauriGateway().getComposer('chat-a')).composer.attachments).toEqual([attachment]);
+    const message = { id: 'message-1', role: 'user', content: '', createdAt: new Date(123).toISOString(), status: 'sent', attachments: [{ ...attachment, messageId: 'message-1' }] };
+    invokeMock.mockResolvedValueOnce({ id: 'chat-a', messages: [message] });
+    expect((await createTauriGateway().getConversation('chat-a')).messages[0]).toEqual(message);
+  });
+
+  it('preserves recoverable native attachment errors for UI recovery', async () => {
+    invokeMock.mockRejectedValueOnce({ message: 'This model does not support PDF attachments. Choose another model.' });
+    await expect(createTauriGateway().selectAttachments('chat-a', 9)).rejects.toThrow('Choose another model');
+    invokeMock.mockRejectedValueOnce('Composer revision conflict');
+    await expect(createTauriGateway().removeAttachment('chat-a', 9, 'file-1')).rejects.toThrow('Composer revision conflict');
+  });
+
   it("binds composer reads/writes and submission revisions to their conversation", async () => {
     invokeMock.mockResolvedValue(undefined);
     const gateway=createTauriGateway();
@@ -60,6 +110,21 @@ describe("Tauri command contract", () => {
       ["crowclaw_membership_use_model", { request: choice }],
       ["crowclaw_membership_acknowledge_welcome", undefined],
       ["crowclaw_membership_manage_usage", undefined],
+    ]);
+  });
+
+  it("routes Codex image sign-in by saved membership account ID only", async () => {
+    const gateway=createTauriGateway();
+    invokeMock.mockResolvedValue({state:"pending",verificationUrl:"https://auth.openai.com/codex/device",userCode:"ABCD-EFGH",pollIntervalSeconds:5,message:null});
+    await gateway.beginCodexImageAuthorization("saved-account");
+    await gateway.pollCodexImageAuthorization("saved-account");
+    await gateway.codexImageAuthorizationStatus("saved-account");
+    await gateway.cancelCodexImageAuthorization("saved-account");
+    expect(invokeMock.mock.calls).toEqual([
+      ["crowclaw_codex_image_auth_begin",{accountId:"saved-account"}],
+      ["crowclaw_codex_image_auth_poll",{accountId:"saved-account"}],
+      ["crowclaw_codex_image_auth_status",{accountId:"saved-account"}],
+      ["crowclaw_codex_image_auth_cancel",{accountId:"saved-account"}],
     ]);
   });
 

@@ -28,6 +28,141 @@ async function withOllama() {
 }
 
 describe("App conversation composer integration", () => {
+  it('adds a fixture, previews it, preserves it through model and Settings changes, then removes it', async () => {
+    const { gateway, ollama } = await withOllama();
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    const folders = vi.spyOn(gateway, 'selectFolder');
+    const selects = vi.spyOn(gateway, 'selectAttachments');
+    const removes = vi.spyOn(gateway, 'removeAttachment');
+    render(<App gateway={gateway} />);
+    fireEvent.change(await ready(), { target: { value: 'Keep this text' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add files' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+    const selected = await screen.findByRole('list', { name: 'Selected files' });
+    expect(selects).toHaveBeenCalledWith(id, expect.any(Number));
+    expect(folders).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Remove selected folder' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Adding files does not grant folder access/)).toBeVisible();
+    await userEvent.click(within(selected).getByRole('button', { name: 'Preview Development fixture.txt' }));
+    expect(await screen.findByText('Development attachment fixture.')).toBeVisible();
+    const savedFiles = (await gateway.getComposer(id)).composer.attachments;
+    await chooseModel(ollama.id, 'gemma3:4b');
+    expect((await gateway.getComposer(id)).composer.attachments).toEqual(savedFiles);
+    expect(screen.getByText(/Selected files go to the selected model \(gemma3:4b\)/)).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Chat' }));
+    expect(await ready()).toHaveValue('Keep this text');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Development fixture.txt' }));
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Selected files' })).not.toBeInTheDocument());
+    expect(removes).toHaveBeenCalledWith(id, expect.any(Number), savedFiles![0].id);
+    expect((await gateway.getComposer(id)).composer.draft).toBe('Keep this text');
+  });
+
+  it('sends attachment-only empty content, clears the submitted draft files, and previews the sent snapshot', async () => {
+    const gateway = createDevelopmentGateway({ firstRun: false, delayMs: 0 });
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    const send = vi.spyOn(gateway, 'sendMessage');
+    const view = render(<App gateway={gateway} />);
+    await ready();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+    await screen.findByRole('list', { name: 'Selected files' });
+    const saved = (await gateway.getComposer(id)).composer;
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    fireEvent.keyDown(screen.getByLabelText('Message CrowClaw'), { key: 'Enter', isComposing: true });
+    expect(send).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    const sent = await screen.findByRole('list', { name: 'Sent attachments' });
+    expect(send).toHaveBeenCalledWith(id, '', null, saved.revision);
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Selected files' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(within(sent).queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument();
+    await userEvent.click(within(sent).getByRole('button', { name: 'Preview Development fixture.txt' }));
+    expect(await screen.findByText('Development attachment fixture.')).toBeVisible();
+    const userMessage = (await gateway.getConversation(id)).messages.find(item => item.role === 'user')!;
+    expect(userMessage.content).toBe('');
+    expect(userMessage.attachments).toEqual([{ ...saved.attachments![0], messageId: userMessage.id }]);
+    expect((await gateway.getComposer(id)).composer.attachments).toEqual([]);
+    // Re-mount proves the view reads retained gateway metadata; this is not a native restart test.
+    view.unmount();
+    render(<App gateway={gateway} />);
+    await ready();
+    expect(screen.getByRole('list', { name: 'Sent attachments' })).toHaveTextContent('Development fixture.txt');
+  });
+
+  it('retains selected files and text on a recoverable model failure, then sends on explicit retry', async () => {
+    const gateway = createDevelopmentGateway({ firstRun: false, delayMs: 0 });
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    const send = vi.spyOn(gateway, 'sendMessage').mockRejectedValueOnce(new Error('Selected model does not support this file. Choose another model and retry.'));
+    render(<App gateway={gateway} />);
+    await ready();
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+    await screen.findByRole('list', { name: 'Selected files' });
+    fireEvent.change(screen.getByLabelText('Message CrowClaw'), { target: { value: 'Keep my draft' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Selected model does not support');
+    expect(screen.getByLabelText('Message CrowClaw')).toHaveValue('Keep my draft');
+    expect(screen.getByRole('list', { name: 'Selected files' })).toHaveTextContent('Development fixture.txt');
+    expect((await gateway.getComposer(id)).composer.attachments).toHaveLength(1);
+    expect((await gateway.getConversation(id)).messages.filter(item => item.role === 'user')).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByRole('list', { name: 'Sent attachments' });
+    expect(send).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Selected files' })).not.toBeInTheDocument());
+  });
+
+  it('confines a pending file selection to its original chat through navigation', async () => {
+    const gateway = createDevelopmentGateway({ firstRun: false, delayMs: 0 });
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    const original = gateway.selectAttachments.bind(gateway);
+    let finish!: () => Promise<void>;
+    vi.spyOn(gateway, 'selectAttachments').mockImplementation((chatId, revision) => new Promise(resolve => {
+      finish = async () => resolve(await original(chatId, revision));
+    }));
+    render(<App gateway={gateway} />);
+    await ready();
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New conversation'));
+    fireEvent.change(await ready(), { target: { value: 'Second chat stays here' } });
+    await act(async () => finish());
+    expect(screen.queryByRole('list', { name: 'Selected files' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Message CrowClaw')).toHaveValue('Second chat stays here');
+    expect((await gateway.getComposer(id)).composer.attachments).toHaveLength(1);
+    await userEvent.click(within(screen.getByRole('complementary', { name: 'Conversations' })).getByRole('button', { name: /Welcome to CrowClaw/ }));
+    await ready();
+    expect(await screen.findByRole('list', { name: 'Selected files' })).toHaveTextContent('Development fixture.txt');
+  });
+
+  it('uses immutable in-memory fixture copies and rejects wrong-chat preview and stale revision removal', async () => {
+    const gateway = createDevelopmentGateway({ firstRun: false, delayMs: 0 });
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    const initial = await gateway.getComposer(id);
+    const selected = await gateway.selectAttachments(id, initial.composer.revision);
+    const file = selected.composer.attachments![0];
+    file.name = 'changed outside gateway';
+    expect((await gateway.previewAttachment(id, file.id)).attachment.name).toBe('Development fixture.txt');
+    const other = (await gateway.createConversation()).conversation.id;
+    await expect(gateway.previewAttachment(other, file.id)).rejects.toThrow('unavailable in this conversation');
+    await expect(gateway.removeAttachment(id, initial.composer.revision, file.id)).rejects.toThrow('changed');
+    expect((await gateway.getComposer(id)).composer.attachments).toHaveLength(1);
+    await gateway.removeAttachment(id, selected.composer.revision, file.id);
+    await expect(gateway.previewAttachment(id, file.id)).rejects.toThrow('unavailable');
+  });
+
+  it('retains a ninth draft file when retained conversation files exceed the request budget', async () => {
+    const gateway = createDevelopmentGateway({ firstRun: false, delayMs: 0 });
+    const id = (await gateway.bootstrap()).selectedConversationId!;
+    let snapshot = await gateway.getComposer(id);
+    for (let count = 0; count < 8; count++) snapshot = await gateway.selectAttachments(id, snapshot.composer.revision);
+    await expect(gateway.selectAttachments(id, snapshot.composer.revision)).rejects.toThrow('at most 8');
+    await gateway.sendMessage(id, '', null, snapshot.composer.revision);
+    snapshot = await gateway.getComposer(id);
+    snapshot = await gateway.selectAttachments(id, snapshot.composer.revision);
+    await expect(gateway.sendMessage(id, '', null, snapshot.composer.revision)).rejects.toThrow('start a new conversation');
+    expect((await gateway.getComposer(id)).composer.attachments).toEqual(snapshot.composer.attachments);
+    expect((await gateway.getConversation(id)).messages.flatMap(message => message.attachments ?? [])).toHaveLength(8);
+  });
   it.each([0, 1000])("blocks the old composer during another chat load and ignores a superseded load failure (timestamp gap %i)", async (timestampGap) => {
     const initialTime = Date.parse('2026-10-09T00:00:00Z');
     const firstTimestamp = new Date(initialTime).toISOString();

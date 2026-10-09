@@ -317,6 +317,62 @@ fn drafts_and_model_choices_are_chat_owned_durable_and_do_not_change_defaults() 
 }
 
 #[test]
+fn large_draft_survives_restart_and_submits_without_truncation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let storage = Storage::open(dir.path()).unwrap();
+    setup(&storage);
+    let text = "α".repeat(1024 * 1024);
+    assert!(text.len() > 1024 * 1024);
+    let saved = storage
+        .save_conversation_composer("chat-a", 0, &text, Some(&choice("model-a")))
+        .unwrap();
+    drop(storage);
+    let reopened = Storage::open(dir.path()).unwrap();
+    let restored = reopened.conversation_composer("chat-a").unwrap();
+    assert_eq!(restored, saved);
+    let (mut message, task) = turn_inputs();
+    message.content = text.clone();
+    let (submitted, _, next) = reopened
+        .begin_composer_turn(&restored, &message, &task)
+        .unwrap();
+    assert_eq!(submitted.content, text);
+    assert!(next.draft.is_empty());
+    drop(reopened);
+    let reopened = Storage::open(dir.path()).unwrap();
+    assert_eq!(reopened.list_messages("chat-a").unwrap()[0].content, text);
+}
+
+#[test]
+fn draft_storage_guard_accepts_exactly_sixteen_mib_and_rejects_one_more_byte() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let storage = Storage::open(dir.path()).unwrap();
+    setup(&storage);
+    let text = "x".repeat(16 * 1024 * 1024);
+    let saved = storage
+        .save_conversation_composer("chat-a", 0, &text, Some(&choice("model-a")))
+        .unwrap();
+    let oversized = format!("{text}x");
+    assert!(matches!(
+        storage.save_conversation_composer("chat-a", saved.revision, &oversized, None),
+        Err(StorageError::InvalidData(_))
+    ));
+    assert_eq!(storage.conversation_composer("chat-a").unwrap(), saved);
+    let (mut message, task) = turn_inputs();
+    message.content = oversized;
+    assert!(matches!(
+        storage.begin_composer_turn(&saved, &message, &task),
+        Err(StorageError::InvalidData(_))
+    ));
+    assert!(storage.list_messages("chat-a").unwrap().is_empty());
+    message.content = text.clone();
+    let (submitted, _, next) = storage
+        .begin_composer_turn(&saved, &message, &task)
+        .unwrap();
+    assert_eq!(submitted.content, text);
+    assert!(next.draft.is_empty());
+}
+
+#[test]
 fn late_autosave_cannot_overwrite_a_newer_choice_from_another_window() {
     let dir = tempfile::TempDir::new().unwrap();
     let first = Storage::open(dir.path()).unwrap();
@@ -462,7 +518,7 @@ fn schema_eight_upgrade_preserves_messages_and_starts_with_no_invented_choice() 
     let before = storage.list_messages("chat-a").unwrap();
     let path = storage.close().unwrap();
     let raw = Connection::open(path).unwrap();
-    raw.execute_batch("DROP TABLE conversation_composers; PRAGMA user_version=8;")
+    raw.execute_batch("DROP TABLE openrouter_credentials; DROP TABLE conversation_attachments; DROP INDEX messages_attachment_owner; DROP TABLE conversation_composers; PRAGMA user_version=8;")
         .unwrap();
     drop(raw);
     let upgraded = Storage::open(dir.path()).unwrap();

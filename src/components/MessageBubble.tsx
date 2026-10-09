@@ -2,16 +2,19 @@ import { Check, Copy, LoaderCircle, ShieldQuestion } from "lucide-react";
 import { useState } from "react";
 import crowClawMark from "../assets/branding/crowclaw-mark.webp";
 import type { ConversationMessage } from "../gateway/contracts";
+import type { CrowClawGateway } from '../gateway/contracts';
+import { AttachmentPreview } from './AttachmentPreview';
 
 type MessageBubbleProps = {
   message: ConversationMessage;
+  previewAttachment?: CrowClawGateway['previewAttachment'];
 };
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, previewAttachment }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const assistant = message.role === "assistant";
 
@@ -44,6 +47,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           )}
         </div>
         <p>{message.content}</p>
+        {!!message.attachments?.length && previewAttachment && <ul className="file-attachments" role="list" aria-label="Sent attachments">
+          {message.attachments.map(attachment => <li key={attachment.id}><AttachmentPreview attachment={attachment} previewAttachment={previewAttachment} /></li>)}
+        </ul>}
         {assistant && message.status !== "streaming" && (
           <button className="message-copy" type="button" onClick={() => void copyMessage()} aria-label="Copy response">
             {copied ? <Check size={14} /> : <Copy size={14} />}

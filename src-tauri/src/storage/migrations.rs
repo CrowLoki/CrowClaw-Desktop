@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StorageError, StorageResult};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     let installed_version: u32 =
@@ -47,9 +47,55 @@ pub(crate) fn migrate(connection: &mut Connection) -> StorageResult<()> {
     if installed_version < 9 {
         migrate_to_v9(&transaction)?;
     }
+    if installed_version < 10 {
+        migrate_to_v10(&transaction)?;
+    }
+    if installed_version < 11 {
+        migrate_to_v11(&transaction)?;
+    }
 
     transaction.commit()?;
 
+    Ok(())
+}
+
+fn migrate_to_v11(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
+        "CREATE TABLE openrouter_credentials (
+            provider_profile_id TEXT PRIMARY KEY NOT NULL REFERENCES provider_profiles(id) ON DELETE CASCADE,
+            protected_blob BLOB NOT NULL CHECK(typeof(protected_blob)='blob' AND length(protected_blob) BETWEEN 1 AND 2097152)
+        );",
+    )?;
+    connection.pragma_update(None, "user_version", 11u32)?;
+    Ok(())
+}
+
+fn migrate_to_v10(connection: &Connection) -> StorageResult<()> {
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX messages_attachment_owner ON messages(conversation_id,id);
+        CREATE TABLE conversation_attachments (
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            id TEXT NOT NULL,
+            message_id TEXT,
+            name TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('text','image','file')),
+            byte_length INTEGER NOT NULL CHECK(byte_length BETWEEN 0 AND 20971520),
+            sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+            created_at_ms INTEGER NOT NULL,
+            bytes BLOB NOT NULL CHECK(length(bytes)=byte_length),
+            PRIMARY KEY(conversation_id,id),
+            FOREIGN KEY(conversation_id,message_id) REFERENCES messages(conversation_id,id) ON DELETE CASCADE
+        );
+        CREATE INDEX attachments_by_message ON conversation_attachments(conversation_id,message_id,created_at_ms,id);
+        CREATE TRIGGER attachment_snapshot_immutable BEFORE UPDATE ON conversation_attachments
+        WHEN old.message_id IS NOT NULL OR new.conversation_id<>old.conversation_id
+          OR new.id<>old.id OR new.name<>old.name OR new.media_type<>old.media_type
+          OR new.kind<>old.kind OR new.byte_length<>old.byte_length OR new.sha256<>old.sha256
+          OR new.created_at_ms<>old.created_at_ms OR new.bytes<>old.bytes
+        BEGIN SELECT RAISE(ABORT,'Attachment snapshots are immutable'); END;",
+    )?;
+    connection.pragma_update(None, "user_version", 10u32)?;
     Ok(())
 }
 

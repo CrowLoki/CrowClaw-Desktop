@@ -1,4 +1,5 @@
 mod actions;
+pub mod attachments;
 pub mod composer;
 mod conversations;
 mod crowquant;
@@ -10,6 +11,7 @@ pub mod membership_types;
 mod memory;
 mod migrations;
 mod models;
+mod provider_credentials;
 mod retention;
 mod semantic;
 mod settings;

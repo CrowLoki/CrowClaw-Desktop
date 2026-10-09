@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrowClawGateway } from '../gateway/contracts';
 import type { ConversationComposerSnapshot, ConversationModelChoice } from '../gateway/composerContracts';
 import { useConversationComposer } from './useConversationComposer';
+import type { AttachmentSummary } from '../gateway/attachmentContracts';
+
+const attachment: AttachmentSummary = { id: 'file-a', conversationId: 'a', messageId: null, name: 'note.txt', mediaType: 'text/plain', kind: 'text', byteLength: 4, sha256: 'hash', createdAtMs: 1 };
 
 const selection: ConversationModelChoice = { providerProfileId: 'local', model: 'model-two', reasoningEffort: null };
 function snapshot(id: string, draft = '', revision = 10): ConversationComposerSnapshot {
@@ -35,8 +38,22 @@ function native() {
   });
   const refreshComposerModels = vi.fn(async (id: string) => ({ id, label: id, provider: 'ollama',
     status: 'ready' as const, models: [] }));
-  const gateway = { getComposer, saveComposerDraft, chooseComposerModel, refreshComposerModels } as unknown as CrowClawGateway;
-  return { gateway, states, getComposer, saveComposerDraft, chooseComposerModel, refreshComposerModels };
+  const selectAttachments = vi.fn(async (id: string, revision: number): Promise<ConversationComposerSnapshot> => {
+    const current = states.get(id)!;
+    if (current.composer.revision !== revision) throw new Error('Composer revision conflict');
+    const next = { ...current, composer: { ...current.composer, revision: revision + 1, attachments: [...(current.composer.attachments ?? []), { ...attachment, conversationId: id }] } };
+    states.set(id, next);
+    return structuredClone(next);
+  });
+  const removeAttachment = vi.fn(async (id: string, revision: number, attachmentId: string) => {
+    const current = states.get(id)!;
+    if (current.composer.revision !== revision) throw new Error('Composer revision conflict');
+    const next = { ...current, composer: { ...current.composer, revision: revision + 1, attachments: (current.composer.attachments ?? []).filter(item => item.id !== attachmentId) } };
+    states.set(id, next);
+    return structuredClone(next);
+  });
+  const gateway = { getComposer, saveComposerDraft, chooseComposerModel, refreshComposerModels, selectAttachments, removeAttachment } as unknown as CrowClawGateway;
+  return { gateway, states, getComposer, saveComposerDraft, chooseComposerModel, refreshComposerModels, selectAttachments, removeAttachment };
 }
 async function settle() { await act(async () => {}); }
 async function autosave() { await act(async () => { await vi.advanceTimersByTimeAsync(150); }); }
@@ -44,6 +61,141 @@ async function autosave() { await act(async () => { await vi.advanceTimersByTime
 describe('useConversationComposer', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it('does not adopt a cancelled picker reply that would overwrite another window draft', async () => {
+    const n = native();
+    n.states.set('a', snapshot('a', 'original', 10));
+    const pending = deferred<ConversationComposerSnapshot>();
+    n.selectAttachments.mockImplementationOnce(() => pending.promise);
+    const { result } = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    let selecting!: Promise<void>;
+    act(() => { selecting = result.current.selectAttachments(); });
+    await settle();
+    const replacement = snapshot('a', 'replacement from another window', 11);
+    n.states.set('a', replacement);
+    await act(async () => { pending.resolve(replacement); await expect(selecting).rejects.toThrow(/changed|conflict/i); });
+    expect(result.current.draft).toBe('original');
+    await act(async () => { await expect(result.current.flush()).rejects.toThrow(/paused|refresh/i); });
+    expect(n.saveComposerDraft).not.toHaveBeenCalled();
+    expect(n.states.get('a')?.composer.draft).toBe('replacement from another window');
+  });
+
+  it('treats old snapshots as empty and flushes unsaved edits before attachment CAS, remove and model choice', async () => {
+    const n = native();
+    const { result } = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    expect(result.current.attachments).toEqual([]);
+    act(() => result.current.setDraft('unsaved text'));
+    await act(async () => result.current.selectAttachments());
+    expect(n.saveComposerDraft).toHaveBeenCalledWith('a', 10, 'unsaved text');
+    expect(n.selectAttachments).toHaveBeenCalledWith('a', 17);
+    expect(result.current.attachments).toEqual([attachment]);
+    await act(async () => result.current.choose(selection));
+    expect(n.chooseComposerModel).toHaveBeenCalledWith('a', 18, selection);
+    expect(result.current.attachments).toEqual([attachment]);
+    act(() => result.current.setDraft('edit before remove'));
+    await act(async () => result.current.removeAttachment(attachment.id));
+    expect(n.saveComposerDraft).toHaveBeenLastCalledWith('a', 21, 'edit before remove');
+    expect(n.removeAttachment).toHaveBeenCalledWith('a', 28, attachment.id);
+    expect(result.current.attachments).toEqual([]);
+    expect(result.current.draft).toBe('edit before remove');
+  });
+
+  it('serializes pending selection, model choice and removal, and confines late selection to its chat', async () => {
+    const n = native();
+    const pending = deferred<ConversationComposerSnapshot>();
+    n.selectAttachments.mockImplementationOnce(() => pending.promise as ReturnType<typeof n.selectAttachments>);
+    const { result, rerender } = renderHook(({ id }) => useConversationComposer(n.gateway, id), { initialProps: { id: 'a' } });
+    await settle();
+    let selecting!: Promise<void>;
+    let choosing!: Promise<void>;
+    let removing!: Promise<void>;
+    act(() => {
+      selecting = result.current.selectAttachments();
+      choosing = result.current.choose(selection);
+      removing = result.current.removeAttachment(attachment.id);
+    });
+    await settle();
+    expect(n.chooseComposerModel).not.toHaveBeenCalled();
+    act(() => result.current.setDraft('typed during picker'));
+    rerender({ id: 'b' });
+    await settle();
+    expect(result.current.attachments).toEqual([]);
+    const next = snapshot('a', '', 11);
+    next.composer.attachments = [attachment];
+    n.states.set('a', next);
+    await act(async () => { pending.resolve(next); await selecting; await choosing; await removing; });
+    expect(result.current.draft).toBe('B saved');
+    expect(result.current.attachments).toEqual([]);
+    expect(n.chooseComposerModel).toHaveBeenCalledWith('a', 18, selection);
+    expect(n.removeAttachment).toHaveBeenCalledWith('a', 21, attachment.id);
+    rerender({ id: 'a' });
+    await settle();
+    expect(result.current.draft).toBe('typed during picker');
+    expect(result.current.attachments).toEqual([]);
+    await autosave();
+  });
+
+  it('does not guess attachment state on cancellation or conflict, then recovers explicitly', async () => {
+    const n = native();
+    const a = snapshot('a');
+    a.composer.attachments = [attachment];
+    n.states.set('a', a);
+    const { result } = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    n.selectAttachments.mockResolvedValueOnce(structuredClone(a) as Awaited<ReturnType<typeof n.selectAttachments>>);
+    await act(async () => result.current.selectAttachments());
+    expect(result.current.attachments).toEqual([attachment]);
+    expect(result.current.snapshot?.composer.revision).toBe(10);
+    n.states.set('a', { ...a, composer: { ...a.composer, revision: 30 } });
+    await act(async () => { await expect(result.current.removeAttachment(attachment.id)).rejects.toThrow('revision conflict'); });
+    expect(result.current.attachments).toEqual([attachment]);
+    await act(async () => { await expect(result.current.selectAttachments()).rejects.toThrow('paused'); });
+    await act(async () => result.current.refresh());
+    await act(async () => result.current.removeAttachment(attachment.id));
+    expect(n.removeAttachment).toHaveBeenLastCalledWith('a', 30, attachment.id);
+    expect(result.current.attachments).toEqual([]);
+  });
+
+  it('keeps files on a failed selection and loads retained files when the hook remounts', async () => {
+    const n = native();
+    const a = snapshot('a', 'retained draft');
+    a.composer.attachments = [attachment];
+    n.states.set('a', a);
+    const first = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    n.selectAttachments.mockRejectedValueOnce(new Error('Unsupported file type'));
+    await act(async () => { await expect(first.result.current.selectAttachments()).rejects.toThrow('Unsupported file type'); });
+    expect(first.result.current.attachments).toEqual([attachment]);
+    expect(first.result.current.draft).toBe('retained draft');
+    first.unmount();
+    const second = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    expect(second.result.current.attachments).toEqual([attachment]);
+    expect(second.result.current.draft).toBe('retained draft');
+  });
+
+  it('uses authoritative post-send attachments and retains newer text instead of clearing all files', async () => {
+    const n = native();
+    const a = snapshot('a');
+    a.composer.attachments = [attachment];
+    n.states.set('a', a);
+    const { result } = renderHook(() => useConversationComposer(n.gateway, 'a'));
+    await settle();
+    await act(async () => result.current.flush());
+    act(() => result.current.setDraft('next draft'));
+    const pendingAttachment = { ...attachment, id: 'next-file', name: 'next.txt' };
+    const next = snapshot('a', '', 50);
+    next.composer.attachments = [pendingAttachment];
+    n.states.set('a', next);
+    await act(async () => result.current.submitted('a', ''));
+    expect(result.current.attachments).toEqual([pendingAttachment]);
+    expect(result.current.draft).toBe('next draft');
+    await autosave();
+    expect(n.saveComposerDraft).toHaveBeenLastCalledWith('a', 50, 'next draft');
+    expect(result.current.attachments).toEqual([pendingAttachment]);
+  });
 
   it('isolates deferred loads and saves across chats and retains the cache on return', async () => {
     const n = native();

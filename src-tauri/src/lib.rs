@@ -6,6 +6,7 @@ pub mod evolution;
 pub mod membership;
 pub mod memory;
 mod memory_export;
+pub mod openrouter;
 pub mod startup;
 pub mod storage;
 pub mod tools;
@@ -66,6 +67,10 @@ pub fn run() {
             crowclaw_membership_cancel_sign_in,
             crowclaw_membership_sign_out,
             crowclaw_membership_refresh_models,
+            app::crowclaw_codex_image_auth_begin,
+            app::crowclaw_codex_image_auth_poll,
+            app::crowclaw_codex_image_auth_status,
+            app::crowclaw_codex_image_auth_cancel,
             crowclaw_membership_use_model,
             crowclaw_membership_acknowledge_welcome,
             crowclaw_membership_manage_usage,
@@ -74,6 +79,12 @@ pub fn run() {
             app::composer::crowclaw_composer_save_draft,
             app::composer::crowclaw_composer_choose,
             app::composer::crowclaw_composer_refresh_models,
+            app::attachments::crowclaw_attachments_select,
+            app::attachments::crowclaw_attachment_remove,
+            app::attachments::crowclaw_attachment_preview,
+            app::openrouter::crowclaw_openrouter_catalog,
+            app::openrouter::crowclaw_openrouter_connect,
+            app::openrouter::crowclaw_openrouter_disconnect,
             crowclaw_model_discover,
             crowclaw_model_test_connection,
             crowclaw_model_connect,

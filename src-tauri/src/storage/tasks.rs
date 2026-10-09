@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use sha2::Digest;
 
 use super::{
     json_to_value, now_ms, optional_json_to_value, optional_value_to_json, require_non_empty,
@@ -168,6 +169,18 @@ impl Storage {
         error: Option<&str>,
         message: Option<&MessageInput>,
     ) -> StorageResult<(StoredTask, bool)> {
+        self.finish_task_with_generated_images(id, next_status, result, error, message, &[])
+    }
+
+    pub fn finish_task_with_generated_images(
+        &self,
+        id: &str,
+        next_status: TaskStatus,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+        message: Option<&MessageInput>,
+        generated_images: &[super::attachments::AttachmentInput],
+    ) -> StorageResult<(StoredTask, bool)> {
         require_non_empty("task id", id)?;
         if !next_status.is_terminal() {
             return Err(StorageError::InvalidData(
@@ -193,6 +206,58 @@ impl Storage {
             })
             .transpose()?;
         let now = now_ms()?;
+        if generated_images.len() > 8
+            || generated_images
+                .iter()
+                .map(|image| image.bytes.len() as u64)
+                .sum::<u64>()
+                > 40 * 1024 * 1024
+        {
+            return Err(StorageError::InvalidData(
+                "Generated images exceed the conversation attachment bounds".into(),
+            ));
+        }
+        if !generated_images.is_empty() && message.is_none() {
+            return Err(StorageError::InvalidData(
+                "Generated images require an assistant message owner".into(),
+            ));
+        }
+        for image in generated_images {
+            super::attachments::validate(image)?;
+            if image.kind != super::attachments::AttachmentKind::Image
+                || image.media_type != "image/png"
+                || image.bytes.len() < 24
+                || !image.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+            {
+                return Err(StorageError::InvalidData(
+                    "Generated image is not a PNG".into(),
+                ));
+            }
+        }
+        let attachment_metadata: Vec<_> = generated_images
+            .iter()
+            .map(|image| super::attachments::AttachmentSummary {
+                id: image.id.clone(),
+                conversation_id: message
+                    .map(|m| m.conversation_id.clone())
+                    .unwrap_or_default(),
+                message_id: message.map(|m| m.id.clone()),
+                name: image.name.clone(),
+                media_type: image.media_type.clone(),
+                kind: super::attachments::AttachmentKind::Image,
+                byte_length: image.bytes.len() as u64,
+                sha256: format!("{:x}", sha2::Sha256::digest(&image.bytes)),
+                created_at_ms: now,
+            })
+            .collect();
+        let metadata_json = match (message, generated_images.is_empty()) {
+            (Some(message), false) => {
+                let mut metadata = message.metadata.clone();
+                metadata["attachments"] = serde_json::to_value(attachment_metadata)?;
+                Some(value_to_json(&metadata)?)
+            }
+            _ => metadata_json,
+        };
         let result_json = optional_value_to_json(result)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -246,6 +311,9 @@ impl Storage {
                 "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1",
                 params![message.conversation_id, now],
             )?;
+            for image in generated_images {
+                transaction.execute("INSERT INTO conversation_attachments(conversation_id,id,message_id,name,media_type,kind,byte_length,sha256,created_at_ms,bytes) VALUES(?1,?2,?3,?4,?5,'image',?6,?7,?8,?9)",params![message.conversation_id,image.id,message.id,image.name,image.media_type,image.bytes.len() as i64,format!("{:x}",sha2::Sha256::digest(&image.bytes)),now,image.bytes])?;
+            }
         }
         transaction.execute(
             r#"UPDATE tasks SET

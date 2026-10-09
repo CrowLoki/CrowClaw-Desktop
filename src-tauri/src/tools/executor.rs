@@ -18,8 +18,20 @@ use crate::agent::CancellationToken;
 use super::{
     approval::{ApprovalRegistry, ClaimedAction},
     ActionId, ApprovalDecision, ApprovalStatus, ApprovalToken, DirectoryEntry, DirectoryEntryKind,
-    MemoryBackend, ProposedAction, ToolError, ToolExecution, ToolOutput, ToolRequest,
+    GeneratedImage, MemoryBackend, ProposedAction, ToolError, ToolExecution, ToolOutput,
+    ToolRequest,
 };
+
+#[async_trait::async_trait]
+pub trait ImageGenerationBackend: Send + Sync {
+    async fn generate(
+        &self,
+        prompt: &str,
+        quality: &str,
+        size: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<GeneratedImage, ToolError>;
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +100,7 @@ pub struct ToolExecutor {
     policy: ToolPolicy,
     approvals: Arc<ApprovalRegistry>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
+    image_generator: Option<Arc<dyn ImageGenerationBackend>>,
 }
 
 impl ToolExecutor {
@@ -97,12 +110,22 @@ impl ToolExecutor {
             policy,
             approvals: Arc::new(ApprovalRegistry::default()),
             memory_backend: None,
+            image_generator: None,
         })
     }
 
     pub fn with_memory_backend(mut self, backend: Arc<dyn MemoryBackend>) -> Self {
         self.memory_backend = Some(backend);
         self
+    }
+
+    pub fn with_image_generator(mut self, backend: Arc<dyn ImageGenerationBackend>) -> Self {
+        self.image_generator = Some(backend);
+        self
+    }
+
+    pub fn image_generation_available(&self) -> bool {
+        self.image_generator.is_some()
     }
 
     pub fn policy(&self) -> &ToolPolicy {
@@ -175,6 +198,23 @@ impl ToolExecutor {
             }
             ToolRequest::SearchMemory { query, limit } => {
                 self.search_memory(&query, limit, cancellation).await
+            }
+            ToolRequest::GenerateImage {
+                prompt,
+                quality,
+                size,
+            } => {
+                let backend = self
+                    .image_generator
+                    .as_ref()
+                    .ok_or(ToolError::InvalidRequest {
+                        tool_name: "generate_image".into(),
+                        message: "image generation is unavailable for this provider/model".into(),
+                    })?;
+                let image = backend
+                    .generate(&prompt, &quality, &size, cancellation)
+                    .await?;
+                Ok(ToolOutput::GeneratedImage { image })
             }
         }
     }

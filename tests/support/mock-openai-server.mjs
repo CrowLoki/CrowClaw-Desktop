@@ -125,7 +125,7 @@ export function createModelFixture() {
           model: body.model,
           data: texts.map((text, index) => ({ index, embedding:
             /car|vehicle|automobile/i.test(text) ? [1, 0, 0] :
-            /qubit|quantum|phase|coherence/i.test(text) ? [0, 1, 0] : [0, 0, 1]
+            /qubit|quantum|phase|coherence|telescope|cobalt|galaxy|astronomy/i.test(text) ? [0, 1, 0] : [0, 0, 1]
           })),
         });
         return;

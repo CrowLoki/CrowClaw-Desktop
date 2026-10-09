@@ -1,4 +1,5 @@
 import type { ModelConnection } from './contracts';
+import type { AttachmentSummary } from './attachmentContracts';
 
 export type ConversationModelChoice = {
   providerProfileId: string;
@@ -10,6 +11,8 @@ export type ConversationComposerState = {
   revision: number;
   draft: string;
   selection: ConversationModelChoice | null;
+  /** Older snapshots may omit this field; consumers treat absence as []. */
+  attachments?: AttachmentSummary[];
 };
 export type ComposerModelSource = {
   id: string;
