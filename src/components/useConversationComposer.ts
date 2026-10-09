@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { CrowClawGateway } from '../gateway/contracts';
 import type { ConversationComposerSnapshot, ConversationModelChoice } from '../gateway/composerContracts';
+import type { AttachmentSummary } from '../gateway/attachmentContracts';
 
 type View = {
   snapshot: ConversationComposerSnapshot | null;
@@ -11,6 +12,9 @@ type View = {
 };
 
 export type ConversationComposerController = View & {
+  attachments: AttachmentSummary[];
+  selectAttachments(): Promise<void>;
+  removeAttachment(attachmentId: string): Promise<void>;
   setDraft(text: string): void;
   choose(selection: ConversationModelChoice): Promise<void>;
   refreshSource(sourceId: string): Promise<void>;
@@ -138,6 +142,26 @@ function createController(gateway: CrowClawGateway) {
     start(e);
     return e;
   }
+  async function changeAttachments(id: string | null, attachmentId?: string) {
+    const e = requireEntry(id);
+    cancelTimer(e);
+    await queue(e, 'write', async () => {
+      const revision = await saveLatest(e);
+      const before = e.view.snapshot!.composer;
+      const snapshot = attachmentId === undefined
+        ? await gateway.selectAttachments(e.id, revision)
+        : await gateway.removeAttachment(e.id, revision, attachmentId);
+      const after = snapshot.composer;
+      if ((after.revision !== revision && after.revision !== revision + 1)
+        || after.draft !== before.draft
+        || after.selection?.providerProfileId !== before.selection?.providerProfileId
+        || after.selection?.model !== before.selection?.model
+        || after.selection?.reasoningEffort !== before.selection?.reasoningEffort) {
+        throw new Error('This conversation changed while selecting files. Refresh to resolve the conflict.');
+      }
+      accept(e, snapshot, true);
+    });
+  }
   return {
     entry,
     start,
@@ -149,8 +173,10 @@ function createController(gateway: CrowClawGateway) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    actions(id: string | null): Omit<ConversationComposerController, keyof View> {
+    actions(id: string | null): Omit<ConversationComposerController, keyof View | 'attachments'> {
       return {
+        selectAttachments: () => changeAttachments(id),
+        removeAttachment: attachmentId => changeAttachments(id, attachmentId),
         setDraft(text) {
           if (id === null) return;
           const e = requireEntry(id);
@@ -229,5 +255,5 @@ export function useConversationComposer(
   const view = useSyncExternalStore(controller.subscribe, () => e?.view ?? empty, () => empty);
   useEffect(() => { if(activeEntry.current===e)return;activeEntry.current=e;if(e)controller.activate(e); }, [controller, e]);
   const actions = useMemo(() => controller.actions(conversationId), [controller, conversationId]);
-  return { ...view, loading:view.loading || activationPending, ...actions };
+  return { ...view, attachments: view.snapshot?.composer.attachments ?? [], loading:view.loading || activationPending, ...actions };
 }

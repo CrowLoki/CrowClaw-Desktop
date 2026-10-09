@@ -141,6 +141,85 @@ It adds to the approved memory, Evolution, CrowNest and God mode roadmap.
 - Preserve accessible keyboard interaction, IME-safe Enter, multiline composition,
   draft recovery, send/stop/cancel states and action-specific approvals.
 
+### OpenRouter — added to the standalone goal 2026-10-09
+
+- Provide a distinct native OpenRouter connection with live model-catalog retrieval
+  and model selection in the existing conversation composer. Do not substitute a
+  hard-coded catalog or treat an OpenRouter key as ChatGPT membership credentials.
+- Refresh and validate the selected model against current provider metadata; expose
+  available modalities and reasoning settings only when supported by that metadata
+  and verified by the adapter. Handle unavailable/changed models and catalog errors
+  explicitly, preserving drafts and attachments without silent model substitution.
+- Reuse conversation-owned next-turn selection and immutable submitted-turn identity.
+  Protect the user's own connection credentials; never copy another application's
+  credentials into CrowClaw or expose keys in messages, exports or logs.
+- Preserve existing free-only/no-paid-fallback constraints. Adding OpenRouter is not
+  authorization to purchase credits, use paid inference, or route a failed request
+  through a chargeable model. Its availability must not become a standalone-core
+  prerequisite.
+- Free classification applies to the complete requested operation, including
+  output generation, per-request, image, audio, video, processing/plugin and any
+  other applicable charges. Zero prompt/completion rates alone do not establish
+  free media output. Unknown or incomplete pricing must not receive a free badge
+  or silently become an allowed free-only request. Verify modality-specific
+  endpoint prices and supported capabilities separately.
+- Crow additionally requires optional paid-model compatibility, without using his
+  key or credits for paid development/testing. Keep his saved connection free-only.
+  Paid operation is a separately enabled user choice with that user's own profile,
+  credentials and explicit spending authorization; never an automatic fallback.
+  Use public metadata and synthetic fixtures to develop paid paths without making
+  paid inference requests. This requirement is not a claim of implemented paid mode.
+- Acceptance includes live catalog retrieval, selection/refresh/error recovery,
+  account/model isolation, and an actual allowed model request in the native app.
+
+### OpenAI plan route and optional API services — clarified 2026-10-09
+
+- Scope the preview limitations below to the specific Responses route. The
+  separate image-generation transport requires its own user-authorized grant;
+  a SIWC access token for api.openai.com/v1 must not be sent to the Codex image
+  endpoint. Its image
+  adapter requires a distinct Codex authorization explicitly linked to the selected
+  registration by its signed verified email. Each grant retains its own validated
+  issuer, client, subject and account-routing identity inside DPAPI, with immutable
+  linkage to the primary registration. Subjects from different OAuth clients are
+  not required to match; explicit conflicting account IDs are still rejected.
+  Every user authorizes their own grant. Do not copy another product's credentials
+  or silently fall back to a paid API key.
+  Native CrowClaw generation, approval audit, atomic PNG/message storage, preview
+  and restart were accepted locally on 9 October. The requested low/1024x1024 test
+  returned a 1254x1254 PNG; this does not prove every size/quality control is honored.
+  Image editing and a public release remain unaccepted.
+- Sign in with ChatGPT plan usage supports eligible Responses requests with
+  namespace-grouped function/custom tools or additional_tools input items, and web
+  search when permitted by the selected model and account/workspace policy.
+- Text, image and file inputs are supported only where the selected model accepts
+  them. Audio/video input, Files API upload, transcription and hosted image
+  generation are outside this preview route. Hosted file search, Code Interpreter,
+  native computer use, hosted MCP/connectors and Responses tool_search are also
+  unsupported; do not equate those hosted restrictions with a ban on local tools.
+- CrowClaw's existing native agent runtime remains the single execution owner.
+  Local file/command/application tools, MCP clients and agent coordination can use
+  supported function/custom calls with the existing approvals and lifecycle.
+  Provider adapters must not introduce a second body/agent engine, identity,
+  memory store or duplicate execution loop merely to support another modality.
+- GPT-Live, API transcription/STT and TTS are separately billed optional adapters,
+  not benefits silently granted by membership login or requirements for the core.
+  Their paid development/testing must not use Crow's keys or credits without new
+  explicit spending authorization. Local or independently verified no-cost routes
+  remain possible within the same runtime.
+- Follow current preview request requirements: store:false, stream:true, explicit
+  input history, supported tool shapes and omission of unsupported request fields.
+  Documented support does not establish that CrowClaw has implemented/tested it.
+- Preserve dated, model-specific empirical results when live behavior differs from
+  preview documentation. On 2026-10-09, Crow-authorized GPT-6 Luna/low tests through
+  CrowClaw's own membership service accepted and enforced max_output_tokens at 16
+  and 32 (minimum16), accepted flat and namespaced function calls, completed a
+  namespaced local-tool result round-trip, accepted a namespaced custom call, and
+  executed web search. Explicit temperature/top_p and the other tested unsupported
+  fields were rejected. Do not remove demonstrated capabilities solely from a
+  blanket documentation assumption, or generalize one account/model result to all
+  models. Custom/hosted output handling still needs native adapter/UI integration.
+
 ### Workspace and navigation
 
 - Left navigation: projects/workspaces, grouped chats, spaces/collections,

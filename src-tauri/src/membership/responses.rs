@@ -16,6 +16,11 @@ use std::{
 };
 
 const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
+// Wire framing and repeated snapshots are not model output tokens. Keep distinct
+// finite transport, event and retained-item guards for large Luna responses.
+const STREAM_LIMIT: usize = 128 * 1024 * 1024;
+const EVENT_LIMIT: usize = 8 * 1024 * 1024;
+const RETAINED_LIMIT: usize = 16 * 1024 * 1024;
 pub struct MembershipProvider {
     service: Arc<MembershipService>,
     selection: MembershipSelection,
@@ -72,6 +77,7 @@ impl MembershipProvider {
             .service
             .client
             .post(format!("{}/responses", protocol::RESOURCE))
+            .timeout(Duration::from_secs(3600))
             .bearer_auth(&credentials.access_token)
             .json(&payload);
         let mut check = tokio::time::interval(Duration::from_millis(100));
@@ -123,14 +129,20 @@ impl MembershipProvider {
             )));
         }
         let mut decoder = ResponseStream::new(self.selection.clone());
+        let idle = tokio::time::sleep(Duration::from_secs(120));
+        tokio::pin!(idle);
         loop {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
                 _ = self.session.cancelled() => return Err(ProviderError::Cancelled),
+                _ = &mut idle => return Err(ProviderError::Transport { message: "ChatGPT response stopped sending data for two minutes".into() }),
                 _ = check.tick() => self.check_connection()?,
                 result = response.chunk() => match result.map_err(|_|ProviderError::Transport{message:"ChatGPT response was interrupted".into()})? {
-                    Some(bytes) => if let Some(completion) = decoder.push(&bytes)? { self.check_connection()?; return Ok(completion); },
+                    Some(bytes) => {
+                        idle.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(120));
+                        if let Some(completion) = decoder.push(&bytes)? { self.check_connection()?; return Ok(completion); }
+                    },
                     None => { self.check_connection()?; return decoder.finish(); },
                 }
             }
@@ -186,6 +198,7 @@ fn request_body(
     request: &ChatCompletionRequest,
     selection: &MembershipSelection,
 ) -> Result<Value, ProviderError> {
+    request.validate_attachments()?;
     if request.model != selection.model || request.messages.is_empty() {
         return Err(ProviderError::InvalidConfiguration {
             message: "Membership request does not match its selected account model".into(),
@@ -210,7 +223,9 @@ fn request_body(
         match message.role {
             ChatRole::Tool => input.push(json!({"type":"function_call_output","call_id":message.tool_call_id.as_deref().filter(|id|!id.is_empty()).ok_or_else(||invalid("Tool result has no original call identifier"))?,"output":message.content.as_deref().unwrap_or("")})),
             _ => {
-                if let Some(text) = &message.content {
+                if let Some(parts) = message.attachment_parts(true)? {
+                    input.push(json!({"role":"user","content":parts}));
+                } else if let Some(text) = &message.content {
                     let role = match message.role {ChatRole::System=>"developer",ChatRole::User=>"user",ChatRole::Assistant=>"assistant",ChatRole::Tool=>unreachable!()};
                     input.push(json!({"role":role,"content":text}));
                 }
@@ -228,10 +243,18 @@ fn request_body(
         payload["tools"] = Value::Array(request.tools.iter().map(|tool|json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters,"strict":false})).collect());
         payload["tool_choice"] = json!("auto");
     }
-    if let Some(limit) = request.max_tokens {
+    if let Some(limit) = request
+        .max_tokens
+        .or_else(|| (selection.model == "gpt-6-luna").then_some(128_000))
+    {
         payload["max_output_tokens"] = json!(limit);
     }
     if let Some(temperature) = request.temperature {
+        if selection.model == "gpt-6-luna" {
+            return Err(invalid(
+                "GPT-6 Luna membership does not accept temperature; leave sampling automatic",
+            ));
+        }
         if !temperature.is_finite() {
             return Err(invalid("Request temperature is invalid"));
         }
@@ -245,6 +268,9 @@ struct ResponseStream {
     buffer: Vec<u8>,
     data: Vec<String>,
     consumed: usize,
+    scanned: usize,
+    event_bytes: usize,
+    retained_bytes: usize,
     terminal: bool,
     completed_items: BTreeMap<usize, Value>,
     pending_items: HashSet<usize>,
@@ -256,6 +282,9 @@ impl ResponseStream {
             buffer: Vec::new(),
             data: Vec::new(),
             consumed: 0,
+            scanned: 0,
+            event_bytes: 0,
+            retained_bytes: 0,
             terminal: false,
             completed_items: BTreeMap::new(),
             pending_items: HashSet::new(),
@@ -266,17 +295,27 @@ impl ResponseStream {
             return Err(invalid("Data arrived after response completion"));
         }
         self.consumed = self.consumed.saturating_add(bytes.len());
-        if self.consumed > RESPONSE_LIMIT {
+        if self.consumed > STREAM_LIMIT {
             return Err(ProviderError::ResponseTooLarge {
-                limit_bytes: RESPONSE_LIMIT,
+                limit_bytes: STREAM_LIMIT,
             });
         }
         self.buffer.extend_from_slice(bytes);
         self.drain_events()
     }
     fn drain_events(&mut self) -> Result<Option<ChatCompletion>, ProviderError> {
-        while let Some(end) = self.buffer.iter().position(|b| *b == b'\n') {
-            let mut line = self.buffer.drain(..=end).collect::<Vec<_>>();
+        let mut start = 0;
+        while let Some(offset) = self.buffer[self.scanned..].iter().position(|b| *b == b'\n') {
+            let end = self.scanned + offset;
+            self.event_bytes = self.event_bytes.saturating_add(end + 1 - start);
+            if self.event_bytes > EVENT_LIMIT {
+                return Err(ProviderError::ResponseTooLarge {
+                    limit_bytes: EVENT_LIMIT,
+                });
+            }
+            let mut line = self.buffer[start..=end].to_vec();
+            start = end + 1;
+            self.scanned = start;
             line.pop();
             if line.last() == Some(&b'\r') {
                 line.pop();
@@ -284,6 +323,7 @@ impl ResponseStream {
             let line = std::str::from_utf8(&line)
                 .map_err(|_| invalid("Response stream contains invalid text"))?;
             if line.is_empty() {
+                self.event_bytes = 0;
                 if let Some(completion) = self.event()? {
                     return Ok(Some(completion));
                 }
@@ -291,6 +331,15 @@ impl ResponseStream {
                 self.data
                     .push(data.strip_prefix(' ').unwrap_or(data).into());
             }
+        }
+        if start > 0 {
+            self.buffer.drain(..start);
+        }
+        self.scanned = self.buffer.len();
+        if self.event_bytes.saturating_add(self.buffer.len()) > EVENT_LIMIT {
+            return Err(ProviderError::ResponseTooLarge {
+                limit_bytes: EVENT_LIMIT,
+            });
         }
         Ok(None)
     }
@@ -322,6 +371,12 @@ impl ResponseStream {
                     .filter(|item| item.is_object())
                     .ok_or_else(|| invalid("Completed output item is invalid"))?;
                 validate_completed_item(item)?;
+                self.retained_bytes = self.retained_bytes.saturating_add(item.to_string().len());
+                if self.retained_bytes > RETAINED_LIMIT {
+                    return Err(ProviderError::ResponseTooLarge {
+                        limit_bytes: RETAINED_LIMIT,
+                    });
+                }
                 if self.completed_items.insert(index, item.clone()).is_some() {
                     return Err(invalid("Response repeats a completed output item"));
                 }

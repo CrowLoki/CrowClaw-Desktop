@@ -8,7 +8,13 @@ class UnavailableGateway implements CrowClawGateway {
   }
 
   bootstrap = async () => this.unavailable();
+  openRouterCatalog = async () => this.unavailable();
+  connectOpenRouter = async () => this.unavailable();
+  disconnectOpenRouter = async () => this.unavailable();
   getComposer = async () => this.unavailable();
+  selectAttachments = async () => this.unavailable();
+  removeAttachment = async () => this.unavailable();
+  previewAttachment = async () => this.unavailable();
   saveComposerDraft = async () => this.unavailable();
   chooseComposerModel = async () => this.unavailable();
   refreshComposerModels = async () => this.unavailable();
@@ -20,6 +26,10 @@ class UnavailableGateway implements CrowClawGateway {
   useMembershipModel = async () => this.unavailable();
   acknowledgeMembershipWelcome = async () => this.unavailable();
   manageMembershipUsage = async () => this.unavailable();
+  beginCodexImageAuthorization = async () => this.unavailable();
+  pollCodexImageAuthorization = async () => this.unavailable();
+  codexImageAuthorizationStatus = async () => this.unavailable();
+  cancelCodexImageAuthorization = async () => this.unavailable();
   discoverEndpoints = async () => this.unavailable();
   testConnection = async () => this.unavailable();
   connectModel = async () => this.unavailable();

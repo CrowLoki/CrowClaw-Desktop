@@ -1,0 +1,11 @@
+.file-attachments { display: grid; gap: 8px; margin: 8px 0; padding: 0; list-style: none; }
+.composer .file-attachments { max-height: min(320px, 32vh); overflow: auto; overscroll-behavior: contain; }
+.file-attachment { min-width: 0; }
+.file-attachment__chip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-raised); font-size: 12px; }
+.file-attachment__name { min-width: 0; overflow-wrap: anywhere; }
+.file-attachment__chip small { color: var(--text-secondary); }
+.file-attachment button { min-width: 28px; min-height: 28px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--text); background: var(--surface-hover); cursor: pointer; }
+.file-attachment__preview { padding: 10px; border: 1px solid var(--line-strong); border-radius: 8px; overflow-wrap: anywhere; }
+.file-attachment__preview p { color: var(--text-secondary); font-size: 12px; }
+.file-attachment__preview pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.file-attachment__preview img { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }

@@ -1,4 +1,4 @@
-import { Check, Database, FileText, LoaderCircle, ShieldAlert, X } from "lucide-react";
+import { Check, Database, FileText, ImagePlus, LoaderCircle, ShieldAlert, X } from "lucide-react";
 import type { ActionDecision, PendingAction } from "../gateway/contracts";
 
 type ApprovalDialogProps = {
@@ -20,8 +20,8 @@ export function ApprovalDialog({ action, deciding, onDecision }: ApprovalDialogP
         </div>
         <p id="approval-summary" className="approval-summary">{action.summary}</p>
         <div className="action-target">
-          {action.kind === "memory" ? <Database size={20} /> : <FileText size={20} />}
-          <div><span>{action.kind === "memory" ? "Requested memory action" : "Requested access"}</span><strong>{action.target}</strong></div>
+          {action.kind === "memory" ? <Database size={20} /> : action.kind === "image-generation" ? <ImagePlus size={20} /> : <FileText size={20} />}
+          <div><span>{action.kind === "memory" ? "Requested memory action" : action.kind === "image-generation" ? "Requested membership image generation" : "Requested access"}</span><strong>{action.target}</strong></div>
           <span className={`risk-badge risk-badge--${action.risk}`}>{action.risk} risk</span>
         </div>
         <div className="action-details">

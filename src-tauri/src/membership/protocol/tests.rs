@@ -180,8 +180,126 @@ fn refresh_checks_rsa_signature_and_authorized_party_for_multiple_audiences() {
 }
 
 #[test]
+fn codex_image_identity_requires_the_codex_client_signature_and_same_chatgpt_subject() {
+    let (identity, _) = registered_session();
+    let mut claims = refresh_claims(&identity);
+    claims["aud"] = json!(CODEX_IMAGE_CLIENT_ID);
+    claims["azp"] = json!(CODEX_IMAGE_CLIENT_ID);
+    let host = "urn:uuid:82dd5019-df90-411c-a3a7-53755c799c04";
+    let signed = sign(&claims);
+    let accepted = verify_codex_image_identity(&signed, host, &fixture().jwks).unwrap();
+    assert_eq!(accepted.subject, identity.subject);
+    assert_eq!(accepted.client_id, CODEX_IMAGE_CLIENT_ID);
+    let mut wrong = claims;
+    wrong["aud"] = json!("some-other-client");
+    wrong["azp"] = json!("some-other-client");
+    assert!(verify_codex_image_identity(&sign(&wrong), host, &fixture().jwks).is_err());
+}
+
+#[test]
+fn chatgpt_account_id_is_extracted_only_as_validated_identity_metadata() {
+    let (identity, _) = registered_session();
+    let mut claims = refresh_claims(&identity);
+    claims["aud"] = json!(CODEX_IMAGE_CLIENT_ID);
+    claims["azp"] = json!(CODEX_IMAGE_CLIENT_ID);
+    claims["https://api.openai.com/auth"] = json!({"chatgpt_account_id":"acct_123"});
+    let token = sign(&claims);
+    verify_codex_image_identity(&token, &host(), &fixture().jwks).unwrap();
+    assert_eq!(
+        chatgpt_account_id_from_oauth_token(&token)
+            .unwrap()
+            .as_deref(),
+        Some("acct_123")
+    );
+}
+
+#[test]
+fn explicit_image_link_accepts_client_scoped_subjects_and_rejects_wrong_identity() {
+    let (primary, _) = registered_session();
+    let mut secondary = refresh_claims(&primary);
+    secondary["aud"] = json!(CODEX_IMAGE_CLIENT_ID);
+    secondary["azp"] = json!(CODEX_IMAGE_CLIENT_ID);
+    secondary["sub"] = json!("different-client-subject");
+    secondary["email"] = json!(primary.email);
+    secondary["email_verified"] = json!(true);
+    let routing = |id: Option<&str>| {
+        let value = id
+            .map(|id| json!({"https://api.openai.com/auth":{"chatgpt_account_id":id}}))
+            .unwrap_or_else(
+                || json!({"https://api.openai.com/auth":{"encrypted_auth_metadata":"opaque"}}),
+            );
+        format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).unwrap())
+        )
+    };
+    let missing = routing(None);
+    let codex = routing(Some("workspace_one"));
+    let accepted = verify_codex_image_link(
+        &sign(&secondary),
+        &primary,
+        &missing,
+        &codex,
+        &fixture().jwks,
+    )
+    .unwrap();
+    assert_ne!(accepted.subject, primary.subject);
+    assert_eq!(accepted.email, primary.email);
+    secondary["email"] = json!("wrong@example.invalid");
+    assert!(verify_codex_image_link(
+        &sign(&secondary),
+        &primary,
+        &missing,
+        &codex,
+        &fixture().jwks
+    )
+    .is_err());
+    secondary["email"] = json!(primary.email);
+    secondary["email_verified"] = json!(false);
+    assert!(verify_codex_image_link(
+        &sign(&secondary),
+        &primary,
+        &missing,
+        &codex,
+        &fixture().jwks
+    )
+    .is_err());
+    secondary["email_verified"] = json!(true);
+    assert!(verify_codex_image_link(
+        &sign(&secondary),
+        &primary,
+        &routing(Some("workspace_other")),
+        &codex,
+        &fixture().jwks
+    )
+    .is_err());
+    secondary["aud"] = json!("wrong-client");
+    assert!(verify_codex_image_link(
+        &sign(&secondary),
+        &primary,
+        &missing,
+        &codex,
+        &fixture().jwks
+    )
+    .is_err());
+}
+
+#[test]
 fn refresh_retains_only_omitted_identity_refresh_token_and_scopes() {
-    let (identity, previous) = registered_session();
+    let (identity, mut previous) = registered_session();
+    previous.codex_images = Some(super::super::CodexImageCredentials {
+        linked_primary_subject: identity.subject.clone(),
+        linked_primary_client_id: identity.client_id.clone(),
+        verified_email: identity.email.clone().unwrap(),
+        issuer: identity.issuer.clone(),
+        subject: identity.subject.clone(),
+        client_id: super::CODEX_IMAGE_CLIENT_ID.into(),
+        chatgpt_account_id: Some("acct_synthetic".into()),
+        access_token: "synthetic-codex-access".into(),
+        refresh_token: "synthetic-codex-refresh".into(),
+        token_type: "Bearer".into(),
+        access_expires_at_ms: 1_900_000_000_000,
+    });
     let token = sign(&refresh_claims(&identity));
     verify_refreshed_identity(&token, &identity, &fixture().jwks).unwrap();
     let reduced_scopes = "openid resource.invoke chatgpt.tokens.use.direct";
@@ -228,6 +346,10 @@ fn refresh_retains_only_omitted_identity_refresh_token_and_scopes() {
         assert_eq!(credentials.subject, identity.subject);
         assert_eq!(credentials.client_id, identity.client_id);
         assert_eq!(credentials.ext_agent_host_id, identity.host_id);
+        assert_eq!(
+            credentials.codex_images.as_ref().unwrap().refresh_token,
+            "synthetic-codex-refresh"
+        );
         assert!(
             (before + 3_600_000..=after + 3_600_000).contains(&credentials.access_expires_at_ms)
         );

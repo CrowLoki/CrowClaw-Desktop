@@ -1,7 +1,7 @@
 use super::protocol::{self, PendingSignIn, TokenReply, AUTH_TIMEOUT};
 use super::{
-    open_credentials, protect_credentials, MembershipAccount, MembershipCatalog,
-    MembershipCredentials, MembershipModel,
+    open_credentials, protect_credentials, CodexImageCredentials, MembershipAccount,
+    MembershipCatalog, MembershipCredentials, MembershipModel,
 };
 use crate::{agent::CancellationToken, storage::Storage};
 use jsonwebtoken::jwk::JwkSet;
@@ -34,6 +34,48 @@ pub struct SignOutResult {
     pub detail: String,
 }
 
+const CODEX_DEVICE_CODE: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const CODEX_DEVICE_POLL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
+const CODEX_TOKEN: &str = "https://auth.openai.com/oauth/token";
+const CODEX_DEVICE_PAGE: &str = "https://auth.openai.com/codex/device";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexImageAuthStatus {
+    pub state: String,
+    pub verification_url: Option<String>,
+    pub user_code: Option<String>,
+    pub poll_interval_seconds: Option<u64>,
+    pub message: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+struct CodexDeviceCodeReply {
+    device_auth_id: String,
+    user_code: String,
+    interval: Option<serde_json::Value>,
+    expires_in: Option<serde_json::Value>,
+}
+#[derive(Clone, Deserialize)]
+struct CodexDeviceAuthorizationReply {
+    authorization_code: String,
+    code_verifier: String,
+}
+#[derive(Deserialize)]
+struct CodexTokenReply {
+    id_token: Option<String>,
+    access_token: String,
+    refresh_token: Option<String>,
+    token_type: String,
+    expires_in: u64,
+}
+#[derive(Clone)]
+struct PendingCodexImageAuth {
+    device_auth_id: String,
+    user_code: String,
+    poll_interval_seconds: u64,
+    expires_at_ms: i64,
+}
+
 struct PendingRequest {
     cancellation: CancellationToken,
     complete: bool,
@@ -48,6 +90,7 @@ pub struct MembershipService {
     pub(crate) client: Client,
     pending: Mutex<HashMap<String, PendingRequest>>,
     sessions: Mutex<HashMap<String, AccountSession>>,
+    codex_image_pending: Mutex<HashMap<String, PendingCodexImageAuth>>,
     #[cfg(test)]
     test_discovery: Option<Discovery>,
 }
@@ -65,6 +108,7 @@ impl MembershipService {
             client,
             pending: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            codex_image_pending: Mutex::new(HashMap::new()),
             #[cfg(test)]
             test_discovery: None,
         })
@@ -74,6 +118,399 @@ impl MembershipService {
         self.storage
             .membership_accounts()
             .map_err(|e| e.to_string())
+    }
+
+    pub async fn begin_codex_image_authorization(
+        &self,
+        id: &str,
+    ) -> Result<CodexImageAuthStatus, String> {
+        let account = self
+            .storage
+            .membership_account(id)
+            .map_err(|e| e.to_string())?;
+        if account.identity.provider != "chatgpt" || !account.has_credentials {
+            return Err("Sign in to this ChatGPT account before enabling its image tools".into());
+        }
+        if let Some(existing) = self
+            .codex_image_pending
+            .lock()
+            .map_err(|_| "Codex image authorization state is unavailable")?
+            .get(id)
+            .cloned()
+        {
+            if (protocol::unix_seconds()? as i64).saturating_mul(1000) < existing.expires_at_ms {
+                return Ok(CodexImageAuthStatus {
+                    state: "pending".into(),
+                    verification_url: Some(CODEX_DEVICE_PAGE.into()),
+                    user_code: Some(existing.user_code),
+                    poll_interval_seconds: Some(existing.poll_interval_seconds),
+                    message: None,
+                });
+            }
+        }
+        let cancellation = self.session_cancellation(id)?;
+        let response = self
+            .send(
+                self.client
+                    .post(CODEX_DEVICE_CODE)
+                    .json(&serde_json::json!({"client_id":protocol::CODEX_IMAGE_CLIENT_ID}))
+                    .timeout(Duration::from_secs(20)),
+                &cancellation,
+            )
+            .await?;
+        let status = response.status();
+        let bytes = read_body(response, &cancellation, 256 * 1024).await?;
+        if !status.is_success() {
+            return Err(provider_failure(status.as_u16(), &bytes));
+        }
+        let reply: CodexDeviceCodeReply = serde_json::from_slice(&bytes)
+            .map_err(|_| "OpenAI returned an invalid Codex authorization challenge")?;
+        if reply.device_auth_id.trim().is_empty()
+            || reply.device_auth_id.len() > 4096
+            || reply.user_code.len() > 64
+            || reply.user_code.is_empty()
+            || !reply
+                .user_code
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err("OpenAI returned an invalid Codex authorization challenge".into());
+        }
+        let interval = reply
+            .interval
+            .as_ref()
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .unwrap_or(5)
+            .clamp(3, 15);
+        let ttl = reply
+            .expires_in
+            .as_ref()
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .unwrap_or(900)
+            .clamp(60, 1800);
+        let expires_at_ms = i64::try_from(protocol::unix_seconds()?)
+            .ok()
+            .and_then(|v| v.checked_add(ttl as i64))
+            .and_then(|v| v.checked_mul(1000))
+            .ok_or("Codex authorization expiry is invalid")?;
+        self.codex_image_pending
+            .lock()
+            .map_err(|_| "Codex image authorization state is unavailable")?
+            .insert(
+                id.into(),
+                PendingCodexImageAuth {
+                    device_auth_id: reply.device_auth_id,
+                    user_code: reply.user_code.clone(),
+                    poll_interval_seconds: interval,
+                    expires_at_ms,
+                },
+            );
+        Ok(CodexImageAuthStatus {
+            state: "pending".into(),
+            verification_url: Some(CODEX_DEVICE_PAGE.into()),
+            user_code: Some(reply.user_code),
+            poll_interval_seconds: Some(interval),
+            message: None,
+        })
+    }
+
+    pub async fn poll_codex_image_authorization(
+        &self,
+        id: &str,
+    ) -> Result<CodexImageAuthStatus, String> {
+        let pending = self
+            .codex_image_pending
+            .lock()
+            .map_err(|_| "Codex image authorization state is unavailable")?
+            .get(id)
+            .cloned();
+        let Some(pending) = pending else {
+            return Ok(CodexImageAuthStatus {
+                state: "not_connected".into(),
+                verification_url: None,
+                user_code: None,
+                poll_interval_seconds: None,
+                message: None,
+            });
+        };
+        if (protocol::unix_seconds()? as i64).saturating_mul(1000) >= pending.expires_at_ms {
+            self.cancel_codex_image_authorization(id)?;
+            return Ok(CodexImageAuthStatus {
+                state: "expired".into(),
+                verification_url: None,
+                user_code: None,
+                poll_interval_seconds: None,
+                message: Some("Codex image sign-in expired. Start again when ready.".into()),
+            });
+        }
+        let cancellation = self.session_cancellation(id)?;
+        let response=self.send(self.client.post(CODEX_DEVICE_POLL).json(&serde_json::json!({"device_auth_id":pending.device_auth_id,"user_code":pending.user_code})).timeout(Duration::from_secs(20)),&cancellation).await?;
+        let status = response.status();
+        let bytes = read_body(response, &cancellation, 256 * 1024).await?;
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(CodexImageAuthStatus {
+                state: "pending".into(),
+                verification_url: Some(CODEX_DEVICE_PAGE.into()),
+                user_code: Some(pending.user_code),
+                poll_interval_seconds: Some(pending.poll_interval_seconds),
+                message: None,
+            });
+        }
+        if !status.is_success() {
+            return Err(provider_failure(status.as_u16(), &bytes));
+        }
+        let authorization: CodexDeviceAuthorizationReply = serde_json::from_slice(&bytes)
+            .map_err(|_| "OpenAI returned an invalid Codex authorization result")?;
+        if authorization.authorization_code.is_empty()
+            || authorization.authorization_code.len() > 8192
+            || authorization.code_verifier.len() < 43
+            || authorization.code_verifier.len() > 128
+        {
+            return Err("OpenAI returned an invalid Codex authorization result".into());
+        }
+        let token_response = self
+            .send(
+                self.client
+                    .post(CODEX_TOKEN)
+                    .form(&[
+                        ("grant_type", "authorization_code"),
+                        ("code", authorization.authorization_code.as_str()),
+                        (
+                            "redirect_uri",
+                            "https://auth.openai.com/deviceauth/callback",
+                        ),
+                        ("client_id", protocol::CODEX_IMAGE_CLIENT_ID),
+                        ("code_verifier", authorization.code_verifier.as_str()),
+                    ])
+                    .timeout(Duration::from_secs(30)),
+                &cancellation,
+            )
+            .await?;
+        let token_status = token_response.status();
+        let token_bytes = read_body(token_response, &cancellation, 1024 * 1024).await?;
+        if !token_status.is_success() {
+            return Err(provider_failure(token_status.as_u16(), &token_bytes));
+        }
+        let token: CodexTokenReply = serde_json::from_slice(&token_bytes)
+            .map_err(|_| "OpenAI returned an invalid Codex token response")?;
+        let id_token = token
+            .id_token
+            .as_deref()
+            .ok_or("Codex sign-in returned no verified account identity")?;
+        let keys: JwkSet = self
+            .json(self.client.get(protocol::JWKS), &cancellation)
+            .await?;
+        let account = self
+            .storage
+            .membership_account(id)
+            .map_err(|e| e.to_string())?;
+        let identity =
+            protocol::verify_codex_image_identity(id_token, &account.identity.host_id, &keys)?;
+        if identity.issuer != account.identity.issuer {
+            return Err("The Codex authorization came from an unexpected identity issuer".into());
+        }
+        if !token.token_type.eq_ignore_ascii_case("Bearer")
+            || token.access_token.trim().is_empty()
+            || token.access_token.len() > 128 * 1024
+        {
+            return Err("Codex sign-in returned an invalid access credential".into());
+        }
+        let refresh_token = token
+            .refresh_token
+            .filter(|value| !value.trim().is_empty() && value.len() <= 128 * 1024)
+            .ok_or("Codex sign-in returned no renewable session")?;
+        let (record, _version) = self
+            .storage
+            .membership_protected_credentials(id)
+            .map_err(|e| e.to_string())?;
+        let mut saved = open_credentials(&record)?;
+        let codex_account_id = protocol::chatgpt_account_id_from_oauth_token(&token.access_token)?;
+        let identity = protocol::verify_codex_image_link(
+            id_token,
+            &record.identity,
+            &saved.access_token,
+            &token.access_token,
+            &keys,
+        )?;
+        let credentials = CodexImageCredentials {
+            linked_primary_subject: record.identity.subject.clone(),
+            linked_primary_client_id: record.identity.client_id.clone(),
+            verified_email: identity
+                .email
+                .clone()
+                .ok_or("Image sign-in did not return an email")?,
+            issuer: identity.issuer,
+            subject: identity.subject,
+            client_id: protocol::CODEX_IMAGE_CLIENT_ID.into(),
+            chatgpt_account_id: codex_account_id,
+            access_token: token.access_token,
+            refresh_token,
+            token_type: "Bearer".into(),
+            access_expires_at_ms: protocol::codex_image_expiry_ms(token.expires_in)?,
+        };
+        let _lock = self.account_lock(Some(id), &cancellation).await?;
+        let (record, version) = self
+            .storage
+            .membership_protected_credentials(id)
+            .map_err(|e| e.to_string())?;
+        saved = open_credentials(&record)?;
+        if saved.subject != account.identity.subject
+            || record.identity.subject != account.identity.subject
+            || record.identity.client_id != account.identity.client_id
+            || record.identity.host_id != account.identity.host_id
+        {
+            return Err("This Codex authorization no longer matches the selected account".into());
+        }
+        let current_primary = protocol::chatgpt_account_id_from_oauth_token(&saved.access_token)?;
+        let current_codex =
+            protocol::chatgpt_account_id_from_oauth_token(&credentials.access_token)?;
+        let current_match = match (current_primary.as_deref(), current_codex.as_deref()) {
+            (Some(primary), Some(codex)) => primary == codex,
+            _ => {
+                credentials.linked_primary_subject == record.identity.subject
+                    && credentials.linked_primary_client_id == record.identity.client_id
+                    && record.identity.email.as_deref() == Some(credentials.verified_email.as_str())
+            }
+        };
+        if !current_match {
+            return Err("The Codex authorization no longer matches this ChatGPT account".into());
+        }
+        saved.codex_images = Some(credentials);
+        self.storage
+            .membership_replace_credentials(
+                id,
+                version,
+                &protect_credentials(&record.identity, &saved)?,
+            )
+            .map_err(|e| e.to_string())?;
+        self.cancel_codex_image_authorization(id)?;
+        Ok(CodexImageAuthStatus {
+            state: "connected".into(),
+            verification_url: None,
+            user_code: None,
+            poll_interval_seconds: None,
+            message: Some("ChatGPT image tools are connected to this saved account.".into()),
+        })
+    }
+
+    pub fn codex_image_authorization_status(
+        &self,
+        id: &str,
+    ) -> Result<CodexImageAuthStatus, String> {
+        let pending = self
+            .codex_image_pending
+            .lock()
+            .map_err(|_| "Codex image authorization state is unavailable")?
+            .get(id)
+            .cloned();
+        if let Some(pending) = pending {
+            if (protocol::unix_seconds()? as i64).saturating_mul(1000) < pending.expires_at_ms {
+                return Ok(CodexImageAuthStatus {
+                    state: "pending".into(),
+                    verification_url: Some(CODEX_DEVICE_PAGE.into()),
+                    user_code: Some(pending.user_code),
+                    poll_interval_seconds: Some(pending.poll_interval_seconds),
+                    message: None,
+                });
+            }
+            self.cancel_codex_image_authorization(id)?;
+        }
+        let (record, _) = self
+            .storage
+            .membership_protected_credentials(id)
+            .map_err(|e| e.to_string())?;
+        let credentials = open_credentials(&record)?;
+        Ok(CodexImageAuthStatus {
+            state: if credentials.codex_images.is_some() {
+                "connected"
+            } else {
+                "not_connected"
+            }
+            .into(),
+            verification_url: None,
+            user_code: None,
+            poll_interval_seconds: None,
+            message: None,
+        })
+    }
+
+    pub(crate) fn has_codex_image_credentials(&self, id: &str) -> Result<bool, String> {
+        let (record, _) = self
+            .storage
+            .membership_protected_credentials(id)
+            .map_err(|e| e.to_string())?;
+        Ok(open_credentials(&record)?.codex_images.is_some())
+    }
+
+    pub fn cancel_codex_image_authorization(&self, id: &str) -> Result<bool, String> {
+        Ok(self
+            .codex_image_pending
+            .lock()
+            .map_err(|_| "Codex image authorization state is unavailable")?
+            .remove(id)
+            .is_some())
+    }
+
+    pub async fn codex_image_credentials(
+        self: &Arc<Self>,
+        id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<CodexImageCredentials, String> {
+        let _lock = self.account_lock(Some(id), cancellation).await?;
+        let (record, version) = self
+            .storage
+            .membership_protected_credentials(id)
+            .map_err(|e| e.to_string())?;
+        let mut saved = open_credentials(&record)?;
+        let mut codex = saved
+            .codex_images
+            .clone()
+            .ok_or("Authorize Codex image tools for this account in Settings")?;
+        let now = (protocol::unix_seconds()? as i64).saturating_mul(1000);
+        if codex.access_expires_at_ms > now + 30_000 {
+            return Ok(codex);
+        }
+        let reply: CodexTokenReply = self
+            .json(
+                self.client.post(CODEX_TOKEN).form(&[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", protocol::CODEX_IMAGE_CLIENT_ID),
+                    ("refresh_token", codex.refresh_token.as_str()),
+                ]),
+                cancellation,
+            )
+            .await?;
+        if !reply.token_type.eq_ignore_ascii_case("Bearer")
+            || reply.access_token.trim().is_empty()
+            || reply.access_token.len() > 128 * 1024
+        {
+            return Err("Codex image token refresh returned an invalid access credential".into());
+        }
+        super::validate_codex_image_routing(&codex, &reply.access_token)?;
+        if let Some(id_token) = reply.id_token.as_deref() {
+            let keys: JwkSet = self
+                .json(self.client.get(protocol::JWKS), cancellation)
+                .await?;
+            let refreshed =
+                protocol::verify_codex_image_identity(id_token, &record.identity.host_id, &keys)?;
+            if refreshed.issuer != codex.issuer || refreshed.subject != codex.subject {
+                return Err("Refreshed Codex credentials belong to a different account".into());
+            }
+        }
+        codex.access_token = reply.access_token;
+        if let Some(refresh) = reply.refresh_token.filter(|v| !v.trim().is_empty()) {
+            codex.refresh_token = refresh
+        }
+        codex.access_expires_at_ms = protocol::codex_image_expiry_ms(reply.expires_in)?;
+        saved.codex_images = Some(codex.clone());
+        self.storage
+            .membership_replace_credentials(
+                id,
+                version,
+                &protect_credentials(&record.identity, &saved)?,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(codex)
     }
 
     pub fn cancel_sign_in(&self, id: &str) -> Result<bool, String> {
@@ -250,6 +687,7 @@ impl MembershipService {
     }
 
     pub async fn sign_out(self: &Arc<Self>, id: &str) -> Result<SignOutResult, String> {
+        self.cancel_codex_image_authorization(id)?;
         let service = Arc::clone(self);
         let id = id.to_owned();
         tokio::spawn(async move { service.finish_sign_out(&id).await })
@@ -298,20 +736,60 @@ impl MembershipService {
                     .into(),
             });
         }
-        let remote_revoked = match self
+        let (remote_revoked, has_codex_grant) = match self
             .storage
             .membership_protected_credentials(id)
             .map_err(|e| e.to_string())
             .and_then(|(record, _)| open_credentials(&record))
         {
-            Ok(credentials) => self.revoke(&credentials, &cancellation).await.is_ok(),
-            Err(_) => false,
+            Ok(credentials) => {
+                let has_codex = credentials.codex_images.is_some();
+                let primary = self.revoke(&credentials, &cancellation).await.is_ok();
+                let codex = match credentials.codex_images.as_ref() {
+                    Some(value) => self.revoke_codex_image(value, &cancellation).await.is_ok(),
+                    None => true,
+                };
+                (primary && codex, has_codex)
+            }
+            Err(_) => (false, false),
         };
         let account = self
             .storage
             .membership_clear_credentials(id, account.credential_version)
             .map_err(|e| e.to_string())?;
-        Ok(SignOutResult {account,remote_revoked,detail: if remote_revoked {"Signed out and ended this account's renewable session."} else {"Signed out locally. Remote revocation could not be confirmed; you can disconnect CrowClaw in ChatGPT Settings."}.into()})
+        Ok(SignOutResult {account,remote_revoked,detail: if remote_revoked {"Signed out and ended this account's renewable session."} else if has_codex_grant {"Signed out locally. OpenAI did not confirm revocation of every saved membership session; disconnect CrowClaw in ChatGPT Settings if you want to revoke them remotely."} else {"Signed out locally. Remote revocation could not be confirmed; you can disconnect CrowClaw in ChatGPT Settings."}.into()})
+    }
+
+    async fn revoke_codex_image(
+        &self,
+        credentials: &CodexImageCredentials,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        let discovery = self.discovery(cancellation).await?;
+        self.revoke_codex_image_at(credentials, cancellation, &discovery.revocation_endpoint)
+            .await
+    }
+
+    async fn revoke_codex_image_at(
+        &self,
+        credentials: &CodexImageCredentials,
+        cancellation: &CancellationToken,
+        endpoint: &str,
+    ) -> Result<(), String> {
+        let response = self
+            .send(
+                self.client
+                    .post(endpoint)
+                    .timeout(Duration::from_secs(15))
+                    .form(&[
+                        ("token", credentials.refresh_token.as_str()),
+                        ("token_type_hint", "refresh_token"),
+                        ("client_id", protocol::CODEX_IMAGE_CLIENT_ID),
+                    ]),
+                cancellation,
+            )
+            .await?;
+        confirm_revocation(response, cancellation).await.map(|_| ())
     }
 
     async fn revoke(

@@ -18,6 +18,10 @@ pub const DISCOVERY: &str = "https://auth.openai.com/.well-known/openid-configur
 pub const JWKS: &str = "https://auth.openai.com/.well-known/jwks.json";
 pub const SCOPE: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
+// The separate Codex OAuth grant is used only for the image endpoint that
+// accepted Hermes' own account credential; the SIWC Responses token is a
+// different audience and was observed to fail that endpoint with 401.
+pub const CODEX_IMAGE_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(600);
 
 // Deliberately no Debug/Serialize: this object holds the verifier and nonce.
@@ -299,6 +303,99 @@ pub fn verify_refreshed_identity(
     Ok(())
 }
 
+pub fn verify_codex_image_identity(
+    token: &str,
+    host_id: &str,
+    keys: &JwkSet,
+) -> Result<MembershipIdentity, String> {
+    verify_signed_identity(token, CODEX_IMAGE_CLIENT_ID, None, host_id, keys)
+}
+
+/// Link an explicitly requested secondary grant to the selected registration.
+/// OIDC subjects belong to their client namespace; do not compare them across
+/// different clients when the primary token omits an account-routing claim.
+pub fn verify_codex_image_link(
+    token: &str,
+    primary: &MembershipIdentity,
+    primary_access: &str,
+    codex_access: &str,
+    keys: &JwkSet,
+) -> Result<MembershipIdentity, String> {
+    let identity = verify_codex_image_identity(token, &primary.host_id, keys)?;
+    let claims: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(
+                token
+                    .split('.')
+                    .nth(1)
+                    .ok_or("Identity token is malformed")?,
+            )
+            .map_err(|_| "Identity token is malformed")?,
+    )
+    .map_err(|_| "Identity token is malformed")?;
+    if identity.issuer != primary.issuer
+        || claims["email_verified"] != true
+        || primary
+            .email
+            .as_deref()
+            .is_none_or(|email| email.is_empty())
+        || identity.email != primary.email
+    {
+        return Err(
+            "The image sign-in must verify the email of the selected ChatGPT registration".into(),
+        );
+    }
+    if let (Some(primary_id), Some(codex_id)) = (
+        chatgpt_account_id_from_oauth_token(primary_access)?,
+        chatgpt_account_id_from_oauth_token(codex_access)?,
+    ) {
+        if primary_id != codex_id {
+            return Err("The image sign-in returned a different ChatGPT workspace".into());
+        }
+    }
+    Ok(identity)
+}
+
+/// Read account-routing metadata from an OAuth token received over the pinned
+/// OpenAI token endpoint. This parses a claim; it does not validate a signature.
+pub fn chatgpt_account_id_from_oauth_token(token: &str) -> Result<Option<String>, String> {
+    if token.len() > 128 * 1024 {
+        return Err("Identity token exceeds its size bound".into());
+    }
+    let payload = token
+        .split('.')
+        .nth(1)
+        .ok_or("Identity token is malformed")?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| "Identity token is malformed")?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Identity token is malformed")?;
+    let id = claims["https://api.openai.com/auth"]["chatgpt_account_id"].as_str();
+    Ok(id
+        .filter(|value| {
+            !value.trim().is_empty()
+                && value.len() <= 256
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+        })
+        .map(str::to_owned))
+}
+
+pub fn codex_image_expiry_ms(expires_in: u64) -> Result<i64, String> {
+    let ttl = i64::try_from(expires_in)
+        .ok()
+        .filter(|value| (60..=31_536_000).contains(value))
+        .ok_or("Codex image token expiry is invalid")?;
+    let now = i64::try_from(unix_seconds()?)
+        .ok()
+        .and_then(|value| value.checked_mul(1000))
+        .ok_or("System time exceeds token expiry bounds")?;
+    now.checked_add(ttl.saturating_mul(1000))
+        .ok_or_else(|| "Codex image token expiry exceeds its bounds".into())
+}
+
 fn verify_signed_identity(
     token: &str,
     client_id: &str,
@@ -404,6 +501,7 @@ pub fn credentials_from_reply(
         access_expires_at_ms: now_ms
             .checked_add(expires_ms)
             .ok_or("Token expiry exceeds its bounds")?,
+        codex_images: previous.and_then(|saved| saved.codex_images.clone()),
     };
     if !credentials.token_type.eq_ignore_ascii_case("Bearer")
         || credentials.access_token.trim().is_empty()

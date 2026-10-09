@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { FreeCatalog } from './openRouterContracts';
+import type { AttachmentPreview } from './attachmentContracts';
 import type { ConversationComposerSnapshot, ComposerModelSource } from './composerContracts';
 import type {
   ActionDecision,
@@ -20,9 +22,16 @@ import type {
   NativeMemoryStatus, MemorySettings, MemoryQuery, MemorySearchResult, MemoryIndexReport, SemanticIndexReport,
   EvolutionSnapshot, EvolutionProposal, EvolutionEvaluation, EvolutionRevision,
   MembershipAccount, MembershipSnapshot, MembershipSignOutResult,
+  CodexImageAuthStatus,
 } from "./contracts";
 
 export const TAURI_COMMANDS = {
+  openRouterCatalog: "crowclaw_openrouter_catalog",
+  connectOpenRouter: "crowclaw_openrouter_connect",
+  disconnectOpenRouter: "crowclaw_openrouter_disconnect",
+  selectAttachments: "crowclaw_attachments_select",
+  removeAttachment: "crowclaw_attachment_remove",
+  previewAttachment: "crowclaw_attachment_preview",
   getComposer: "crowclaw_composer_get",
   saveComposerDraft: "crowclaw_composer_save_draft",
   chooseComposerModel: "crowclaw_composer_choose",
@@ -32,6 +41,10 @@ export const TAURI_COMMANDS = {
   cancelMembershipSignIn: "crowclaw_membership_cancel_sign_in",
   signOutMembership: "crowclaw_membership_sign_out",
   refreshMembershipModels: "crowclaw_membership_refresh_models",
+  beginCodexImageAuthorization: "crowclaw_codex_image_auth_begin",
+  pollCodexImageAuthorization: "crowclaw_codex_image_auth_poll",
+  codexImageAuthorizationStatus: "crowclaw_codex_image_auth_status",
+  cancelCodexImageAuthorization: "crowclaw_codex_image_auth_cancel",
   useMembershipModel: "crowclaw_membership_use_model",
   acknowledgeMembershipWelcome: "crowclaw_membership_acknowledge_welcome",
   manageMembershipUsage: "crowclaw_membership_manage_usage",
@@ -84,6 +97,12 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
 
 export function createTauriGateway(): CrowClawGateway {
   return {
+    openRouterCatalog: (profileId) => invokeNative<FreeCatalog>(TAURI_COMMANDS.openRouterCatalog, { request: { profileId: profileId ?? null } }),
+    connectOpenRouter: (request) => invokeNative<ModelConnection>(TAURI_COMMANDS.connectOpenRouter, { request }),
+    disconnectOpenRouter: (profileId) => invokeNative<void>(TAURI_COMMANDS.disconnectOpenRouter, { request: { profileId } }),
+    selectAttachments: (conversationId, revision) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.selectAttachments, { request: { conversationId, revision } }),
+    removeAttachment: (conversationId, revision, attachmentId) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.removeAttachment, { request: { conversationId, revision, attachmentId } }),
+    previewAttachment: (conversationId, attachmentId) => invokeNative<AttachmentPreview>(TAURI_COMMANDS.previewAttachment, { request: { conversationId, attachmentId } }),
     getComposer: (conversationId) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.getComposer,{request:{conversationId}}),
     saveComposerDraft: (conversationId,revision,draft) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.saveComposerDraft,{request:{conversationId,revision,draft}}),
     chooseComposerModel: (conversationId,revision,selection) => invokeNative<ConversationComposerSnapshot>(TAURI_COMMANDS.chooseComposerModel,{request:{conversationId,revision,selection}}),
@@ -93,6 +112,10 @@ export function createTauriGateway(): CrowClawGateway {
     cancelMembershipSignIn: (requestId) => invokeNative<boolean>(TAURI_COMMANDS.cancelMembershipSignIn, { requestId }),
     signOutMembership: (accountId) => invokeNative<MembershipSignOutResult>(TAURI_COMMANDS.signOutMembership, { accountId }),
     refreshMembershipModels: (accountId) => invokeNative<MembershipAccount>(TAURI_COMMANDS.refreshMembershipModels, { accountId }),
+    beginCodexImageAuthorization: (accountId) => invokeNative<CodexImageAuthStatus>(TAURI_COMMANDS.beginCodexImageAuthorization,{accountId}),
+    pollCodexImageAuthorization: (accountId) => invokeNative<CodexImageAuthStatus>(TAURI_COMMANDS.pollCodexImageAuthorization,{accountId}),
+    codexImageAuthorizationStatus: (accountId) => invokeNative<CodexImageAuthStatus>(TAURI_COMMANDS.codexImageAuthorizationStatus,{accountId}),
+    cancelCodexImageAuthorization: (accountId) => invokeNative<boolean>(TAURI_COMMANDS.cancelCodexImageAuthorization,{accountId}),
     useMembershipModel: (request) => invokeNative<ModelConnection>(TAURI_COMMANDS.useMembershipModel, { request }),
     acknowledgeMembershipWelcome: () => invokeNative<void>(TAURI_COMMANDS.acknowledgeMembershipWelcome),
     manageMembershipUsage: () => invokeNative<void>(TAURI_COMMANDS.manageMembershipUsage),

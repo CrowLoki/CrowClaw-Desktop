@@ -1,10 +1,14 @@
-import { useEffect, useId, useRef } from "react";
-import type { ModelConnection } from "../gateway/contracts";
+import { useEffect, useId, useRef, useState } from "react";
+import type { CrowClawGateway, ModelConnection } from "../gateway/contracts";
+import type { CodexImageAuthStatus } from "../gateway/contracts";
 import { membershipModels, type MembershipController } from "./useMembershipAccounts";
 
-export function MembershipAccounts({ membership, connection }: { membership: MembershipController; connection: ModelConnection | null }) {
+export function MembershipAccounts({ membership, connection, gateway }: { membership: MembershipController; connection: ModelConnection | null; gateway:CrowClawGateway }) {
   const id = useId();
   const errorRef = useRef<HTMLDivElement>(null);
+  const [codexImageAuth,setCodexImageAuth]=useState<CodexImageAuthStatus|null>(null);
+  const [codexImageError,setCodexImageError]=useState<string|null>(null);
+  const [codexImagePollRevision,setCodexImagePollRevision]=useState(0);
   const { account, selectedId, choice, label } = membership;
   const models = membershipModels(account);
   const model = models.find((item) => item.slug === choice.model);
@@ -14,6 +18,37 @@ export function MembershipAccounts({ membership, connection }: { membership: Mem
   const error = membership.error ?? membership.catalogError;
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+
+  useEffect(()=>{
+    let active=true;
+    setCodexImageAuth(null);setCodexImageError(null);
+    if(account?.hasCredentials){
+      void gateway.codexImageAuthorizationStatus(account.id).then(value=>{if(active)setCodexImageAuth(value)}).catch(cause=>{if(active)setCodexImageError(cause instanceof Error?cause.message:"Could not read image authorization status.")});
+    }
+    return()=>{active=false};
+  },[gateway,account?.id,account?.hasCredentials]);
+
+  useEffect(()=>{
+    if(!account?.hasCredentials||codexImageAuth?.state!=="pending")return;
+    let active=true;
+    const timer=window.setTimeout(()=>{
+      void gateway.pollCodexImageAuthorization(account.id).then(value=>{if(active){setCodexImageAuth(value);if(value.state==="pending")setCodexImagePollRevision(revision=>revision+1)}}).catch(cause=>{if(active)setCodexImageError(cause instanceof Error?cause.message:"Codex image sign-in could not be checked.")});
+    },Math.max(3,codexImageAuth.pollIntervalSeconds??5)*1000);
+    return()=>{active=false;window.clearTimeout(timer)};
+  },[gateway,account?.id,account?.hasCredentials,codexImageAuth?.state,codexImageAuth?.pollIntervalSeconds,codexImagePollRevision]);
+
+  async function beginCodexImageAuthorization(){
+    if(!account||busy)return;
+    setCodexImageError(null);
+    try{setCodexImageAuth(await gateway.beginCodexImageAuthorization(account.id))}
+    catch(cause){setCodexImageError(cause instanceof Error?cause.message:"Could not start Codex image sign-in.")}
+  }
+
+  async function cancelCodexImageAuthorization(){
+    if(!account)return;
+    try{await gateway.cancelCodexImageAuthorization(account.id);setCodexImageAuth({state:"not_connected",verificationUrl:null,userCode:null,pollIntervalSeconds:null,message:null})}
+    catch(cause){setCodexImageError(cause instanceof Error?cause.message:"Could not cancel Codex image sign-in.")}
+  }
 
   return (
     <section className="settings-panel membership-panel" aria-labelledby={`${id}-title`}>
@@ -46,6 +81,14 @@ export function MembershipAccounts({ membership, connection }: { membership: Mem
               <div className="membership-actions">
                 <button type="button" className="button button--secondary" disabled={busy || membership.refreshing} onClick={membership.refresh}>Refresh models</button>
                 <button type="button" className="button button--danger-quiet" disabled={busy || membership.refreshing} onClick={() => void membership.signOut()}>Sign out of this account</button>
+              </div>
+              <div className="membership-image-access">
+                <h3>Image generation</h3>
+                {codexImageAuth?.state==="connected" ? <p role="status">ChatGPT image access is connected for {account.label}.</p> :
+                  codexImageAuth?.state==="pending" ? <div role="status"><p>Continue the Codex sign-in opened in your browser. Enter this code:</p><p><strong>{codexImageAuth.userCode}</strong></p><button type="button" className="button button--secondary" onClick={()=>void cancelCodexImageAuthorization()}>Cancel image sign-in</button></div> :
+                  <><p className="membership-help">The image service needs a separate OpenAI Codex sign-in. Use the same ChatGPT account shown above; CrowClaw stores that image grant encrypted with this account. Generated images use your ChatGPT plan’s image allowance.</p><button type="button" className="button button--secondary" disabled={busy} onClick={()=>void beginCodexImageAuthorization()}>Connect ChatGPT image generation</button></>}
+                {codexImageError&&<p role="alert">{codexImageError}</p>}
+                {codexImageAuth?.state==="expired"&&<p role="status">{codexImageAuth.message}</p>}
               </div>
               {membership.refreshing && <p role="status">Refreshing models for {account.label}…</p>}
               {!membership.refreshing && !membership.catalogError && models.length === 0 && <p>No models were returned for this account. Refresh models or reconnect to try again.</p>}

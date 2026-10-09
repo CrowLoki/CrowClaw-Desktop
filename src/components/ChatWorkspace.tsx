@@ -16,6 +16,9 @@ import type {
   SelectedFolder,
 } from "../gateway/contracts";
 import { MessageBubble } from "./MessageBubble";
+import { AttachmentPreview } from './AttachmentPreview';
+import type { AttachmentSummary } from '../gateway/attachmentContracts';
+import type { CrowClawGateway } from '../gateway/contracts';
 
 type ChatWorkspaceProps = {
   conversation: Conversation | null;
@@ -31,6 +34,12 @@ type ChatWorkspaceProps = {
   selectedFolder: SelectedFolder | null;
   onSelectedFolderChange: (folder: SelectedFolder | null) => void;
   composerLoading?: boolean;
+  attachments?: AttachmentSummary[];
+  attachmentsBusy?: boolean;
+  developmentPreview?: boolean;
+  onSelectAttachments?: () => Promise<void>;
+  onRemoveAttachment?: (attachmentId: string) => Promise<void>;
+  previewAttachment?: CrowClawGateway['previewAttachment'];
   onSelectFolder: () => Promise<SelectedFolder | null>;
   onSend: (content: string, selectedFolder: SelectedFolder | null) => Promise<void>;
 };
@@ -55,6 +64,12 @@ export function ChatWorkspace({
   selectedFolder,
   onSelectedFolderChange,
   composerLoading = false,
+  attachments = [],
+  attachmentsBusy = false,
+  developmentPreview = false,
+  onSelectAttachments,
+  onRemoveAttachment,
+  previewAttachment,
   onSelectFolder,
   onSend,
 }: ChatWorkspaceProps) {
@@ -76,10 +91,10 @@ export function ChatWorkspace({
 
   async function submit() {
     const content = draft.trim();
-    if ((!content && !selectedFolder) || sending || composerLoading || loading || !conversation || connection.status !== "connected") return;
+    if ((!content && !selectedFolder && attachments.length === 0) || sending || composerLoading || loading || !conversation || connection.status !== "connected") return;
     const folder = selectedFolder;
     try {
-      await onSend(content || `Inspect the selected folder “${folder?.name}”.`, folder);
+      await onSend(content || (folder ? `Inspect the selected folder “${folder.name}”.` : ''), folder);
       onSelectedFolderChange(null);
     } catch {
       // The parent exposes the failure. Keep the draft and chosen folder intact.
@@ -118,7 +133,7 @@ export function ChatWorkspace({
           </div>
         )}
         {!loading && conversation && conversation.messages.length > 0 &&
-          conversation.messages.map((message) => <MessageBubble message={message} key={message.id} />)}
+          conversation.messages.map((message) => <MessageBubble message={message} previewAttachment={previewAttachment} key={`${conversation.id}:${message.id}`} />)}
         {!loading && conversation && conversation.messages.length === 0 && (
           <section className="new-conversation" aria-labelledby="new-conversation-title">
             <img
@@ -151,6 +166,12 @@ export function ChatWorkspace({
         {connection.status !== "connected" && <p role="status">Disconnected. Choose a connection in Settings or Connections to continue.</p>}
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="composer">
+          {attachments.length > 0 && previewAttachment && <ul className="file-attachments" role="list" aria-label="Selected files">
+            {attachments.map(attachment => <li key={`${attachment.conversationId}:${attachment.id}`}>
+              <AttachmentPreview attachment={attachment} previewAttachment={previewAttachment} onRemove={onRemoveAttachment}
+                disabled={attachmentsBusy || sending || composerLoading || loading} />
+            </li>)}
+          </ul>}
           {selectedFolder && (
             <div className="attachment-chip">
               <FolderPlus size={15} />
@@ -169,16 +190,26 @@ export function ChatWorkspace({
             aria-label="Message CrowClaw"
           />
           <div className="composer__toolbar">
+            {onSelectAttachments && <button className="composer-tool" type="button"
+              onClick={() => void onSelectAttachments().catch(() => undefined)}
+              disabled={attachmentsBusy || sending || composerLoading || loading || !conversation || attachments.length >= 8}
+              aria-describedby="attachment-guidance"><Paperclip size={17} aria-hidden="true" /> Add files</button>}
             <button className="composer-tool" type="button" onClick={() => void chooseFolder()} disabled={selectingFolder || sending || composerLoading || loading || !conversation}>
-              {selectingFolder ? <LoaderCircle className="spin" size={17} /> : <Paperclip size={17} />}
+              {selectingFolder ? <LoaderCircle className="spin" size={17} /> : <FolderPlus size={17} />}
               Choose folder
             </button>
             <span className="composer-hint"><ShieldCheck size={14} /> Local actions require permission</span>
-            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder) || sending || !conversation || composerLoading || connection.status !== "connected"} aria-label="Send message">
+            <button className="send-button" type="button" onClick={() => void submit()} disabled={(!draft.trim() && !selectedFolder && attachments.length === 0) || sending || !conversation || composerLoading || loading || connection.status !== "connected"} aria-label="Send message">
               {sending ? <LoaderCircle className="spin" size={18} /> : <ArrowUp size={19} />}
             </button>
           </div>
         </div>
+        {onSelectAttachments && <p className="attachment-guidance" id="attachment-guidance">
+          {developmentPreview ? 'Development preview: Add files adds an in-memory text fixture; no native picker or local file is accessed. ' : ''}
+          Selected files go to the selected model ({connection.model}) when you Send. Adding files does not grant folder access.
+          {' '}20 MiB per file; UTF-8 text up to 1 MiB. Each model request supports up to 8 files and 40 MiB total, including retained chat files. Start a new chat if that limit is reached.
+          {' '}Text/code, PNG, JPEG, WebP, GIF, PDF, DOCX, PPTX and XLSX, subject to model support.
+        </p>}
         <p className="composer-note">Enter to send · Shift + Enter for a new line</p>
       </div>
     </main>

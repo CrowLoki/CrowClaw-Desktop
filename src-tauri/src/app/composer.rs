@@ -106,6 +106,32 @@ fn sources(state: &AppState) -> Result<Vec<ComposerModelSource>, String> {
         if profile.provider_kind == "chatgpt" {
             continue;
         }
+        if profile.provider_kind == "openrouter" {
+            let connected = state
+                .storage
+                .has_openrouter_key(&profile.id)
+                .map_err(display_error)?;
+            sources.push(ComposerModelSource {
+                id: profile.id.clone(),
+                label: profile.name.clone(),
+                provider: "openrouter".into(),
+                status: if connected { "ready" } else { "disconnected" }.into(),
+                models: openrouter::cached_catalog(&state.storage, &profile.id)
+                    .map(|catalog| {
+                        catalog
+                            .models
+                            .into_iter()
+                            .map(|model| ComposerModel {
+                                id: model.id,
+                                display_name: model.name,
+                                reasoning_efforts: model.reasoning_efforts,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
+            continue;
+        }
         sources.push(ComposerModelSource {
             id: profile.id.clone(),
             label: profile.name.clone(),
@@ -147,7 +173,10 @@ pub(super) fn ensure(state: &AppState, id: &str) -> Result<ConversationComposer,
         .storage
         .default_provider_profile()
         .map_err(display_error)?;
-    if let Some(profile) = default.as_ref().filter(|p| p.provider_kind != "chatgpt") {
+    if let Some(profile) = default
+        .as_ref()
+        .filter(|p| !matches!(p.provider_kind.as_str(), "chatgpt" | "openrouter"))
+    {
         if state
             .storage
             .get_setting::<LocalCatalog>(&catalog_key(&profile.id))
@@ -203,6 +232,11 @@ pub(super) fn profile_for_choice(
         .get_provider_profile(&choice.provider_profile_id)
         .map_err(display_error)?
         .ok_or("This connection was removed; choose another connection for this chat")?;
+    if profile.provider_kind == "openrouter" {
+        profile.model = choice.model.clone();
+        openrouter::cached_model(state, &profile, choice.reasoning_effort.as_deref())?;
+        return Ok(profile);
+    }
     if profile.provider_kind == "chatgpt" {
         let account_id = profile
             .credential_reference
@@ -232,7 +266,9 @@ pub(super) fn provider_for_choice(
     choice: &ConversationModelChoice,
 ) -> Result<(ProviderProfile, Arc<dyn ChatProvider>), String> {
     let profile = profile_for_choice(state, choice)?;
-    let provider: Arc<dyn ChatProvider> = if profile.provider_kind == "chatgpt" {
+    let provider: Arc<dyn ChatProvider> = if profile.provider_kind == "openrouter" {
+        openrouter::provider(state, &profile, choice.reasoning_effort.clone())?
+    } else if profile.provider_kind == "chatgpt" {
         Arc::new(MembershipProvider::new(
             state.memberships.clone(),
             MembershipSelection {
@@ -249,7 +285,10 @@ pub(super) fn provider_for_choice(
     };
     Ok((profile, provider))
 }
-fn snapshot(state: &AppState, saved: ConversationComposer) -> Result<ComposerSnapshot, String> {
+pub(super) fn snapshot(
+    state: &AppState,
+    saved: ConversationComposer,
+) -> Result<ComposerSnapshot, String> {
     let (connection, warning) = match saved.selection.as_ref() {
         Some(choice) => match profile_for_choice(state, choice) {
             Ok(profile) => (Some(connection_view(&profile, "connected", None)), None),
@@ -371,6 +410,13 @@ pub async fn crowclaw_composer_refresh_models(
         .get_provider_profile(&request.source_id)
         .map_err(display_error)?
         .ok_or("Connection was not found")?;
+    if profile.provider_kind == "openrouter" {
+        openrouter::refresh(&state, &profile.id).await?;
+        return sources(&state)?
+            .into_iter()
+            .find(|source| source.id == profile.id)
+            .ok_or("OpenRouter connection was not found".into());
+    }
     if profile.provider_kind == "chatgpt" {
         return Err("Select the account's membership connection".into());
     }
@@ -668,6 +714,7 @@ mod tests {
                 "chatgpt.tokens.use.direct".into(),
             ],
             access_expires_at_ms: 1_900_000_000_000,
+            codex_images: None,
         };
         let account = state
             .storage

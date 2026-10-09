@@ -1,4 +1,5 @@
 import type { ConversationComposerSnapshot, ConversationComposerState, ComposerModelSource } from './composerContracts';
+import type { AttachmentPreview, AttachmentSummary } from './attachmentContracts';
 import type {
   ActionDecision,
   ActionDecisionResult,
@@ -149,11 +150,13 @@ export function createDevelopmentGateway(
   const conversations = new Map<string, Conversation>([[welcome.id, welcome]]);
   const composerConnections = new Map<string,ModelConnection>(connection ? [[connection.id,clone(connection)]] : []);
   const composers = new Map<string,ConversationComposerState>();
+  // Immutable, session-only UX fixture. No picker, filesystem or provider access.
+  const attachmentPreviews = new Map<string, AttachmentPreview>();
   function composerState(id:string):ConversationComposerState {
     requireConversation(id);
     let saved=composers.get(id);
     if (!saved) {
-      saved={conversationId:id,revision:1,draft:'',selection:connection?{providerProfileId:connection.id,model:connection.model,reasoningEffort:null}:null};
+      saved={conversationId:id,revision:1,draft:'',attachments:[],selection:connection?{providerProfileId:connection.id,model:connection.model,reasoningEffort:null}:null};
       composers.set(id,saved);
     }
     return saved;
@@ -264,6 +267,36 @@ export function createDevelopmentGateway(
 
   return {
     async getComposer(id) {return composerSnapshot(id);},
+    async selectAttachments(id, revision) {
+      await pause();
+      const saved = requireComposerRevision(id, revision);
+      const attachments = saved.attachments ?? [];
+      if (attachments.length >= 8) throw new Error('A draft can contain at most 8 files. Remove a file and retry.');
+      const attachment: AttachmentSummary = {
+        id: createId('fixture-attachment', ++counter), conversationId: id, messageId: null,
+        name: 'Development fixture.txt', mediaType: 'text/plain', kind: 'text', byteLength: 32,
+        sha256: 'ba4010c30b99298ffb2f241cb48de3ac7ac7b70a7fa1c290f6dc86b93a03af57', createdAtMs: Date.now(),
+      };
+      attachmentPreviews.set(attachment.id, { attachment: clone(attachment), text: 'Development attachment fixture.\n', dataUrl: null });
+      composers.set(id, { ...saved, attachments: [...attachments, attachment], revision: revision + 1 });
+      return composerSnapshot(id);
+    },
+    async removeAttachment(id, revision, attachmentId) {
+      await pause();
+      const saved = requireComposerRevision(id, revision);
+      const attachments = saved.attachments ?? [];
+      if (!attachments.some(item => item.id === attachmentId)) throw new Error('That attachment is not in this draft. Refresh the composer.');
+      composers.set(id, { ...saved, attachments: attachments.filter(item => item.id !== attachmentId), revision: revision + 1 });
+      attachmentPreviews.delete(attachmentId);
+      return composerSnapshot(id);
+    },
+    async previewAttachment(id, attachmentId) {
+      await pause();
+      requireConversation(id);
+      const preview = attachmentPreviews.get(attachmentId);
+      if (!preview || preview.attachment.conversationId !== id) throw new Error('That attachment is unavailable in this conversation.');
+      return clone(preview);
+    },
     async saveComposerDraft(id,revision,draft) {
       const saved=requireComposerRevision(id,revision);
       composers.set(id,{...saved,draft,revision:revision+1});return composerSnapshot(id);
@@ -283,6 +316,10 @@ export function createDevelopmentGateway(
     useMembershipModel: nativeMembershipOnly,
     acknowledgeMembershipWelcome: nativeMembershipOnly,
     manageMembershipUsage: nativeMembershipOnly,
+    beginCodexImageAuthorization: nativeMembershipOnly,
+    pollCodexImageAuthorization: nativeMembershipOnly,
+    async codexImageAuthorizationStatus() { return { state: "not_connected", verificationUrl: null, userCode: null, pollIntervalSeconds: null, message: null }; },
+    cancelCodexImageAuthorization: nativeMembershipOnly,
     async saveEvolutionFeedback(request) {
       await pause();
       const observation = evolution.observations.find((item) => item.taskId === request.taskId);
@@ -347,6 +384,15 @@ export function createDevelopmentGateway(
       const token = evolutionRequests.get(requestId);
       if (!token) throw new Error("That model request is no longer running.");
       token.cancelled = true;
+    },
+    async openRouterCatalog() {
+      throw new Error('Live OpenRouter catalog requires the installed desktop app. Browser preview does not access OpenRouter.');
+    },
+    async connectOpenRouter() {
+      throw new Error('OpenRouter key storage requires the installed desktop app. No key was saved in this browser.');
+    },
+    async disconnectOpenRouter() {
+      throw new Error('OpenRouter disconnection requires the installed desktop app.');
     },
     async bootstrap(): Promise<AppBootstrap> {
       await pause();
@@ -453,7 +499,12 @@ export function createDevelopmentGateway(
         throw new Error("Connect a local model before sending a message.");
       }
       const conversation = requireConversation(conversationId);
-      composers.set(conversationId,{...savedComposer,draft:'',revision:savedComposer.revision+1});
+      const attachments = savedComposer.attachments ?? [];
+      if (!content.trim() && !selectedFolder && attachments.length === 0) throw new Error('Write a message or select a file or folder before sending.');
+      const requestAttachments = [...conversation.messages.flatMap(message => message.attachments ?? []), ...attachments];
+      if (requestAttachments.length > 8) throw new Error('This conversation exceeds eight attachments in a model request; start a new conversation for more files.');
+      if (requestAttachments.reduce((total, attachment) => total + attachment.byteLength, 0) > 40 * 1024 * 1024) throw new Error('Attachments in this conversation exceed the 40 MiB request limit; start a new conversation.');
+      composers.set(conversationId,{...savedComposer,draft:'',attachments:[],revision:savedComposer.revision+1});
       const timestamp = now();
       const userMessage: ConversationMessage = {
         id: createId("message", ++counter),
@@ -462,6 +513,11 @@ export function createDevelopmentGateway(
         createdAt: timestamp,
         status: "sent",
       };
+      userMessage.attachments = attachments.map(attachment => ({ ...attachment, messageId: userMessage.id }));
+      for (const attachment of userMessage.attachments) {
+        const preview = attachmentPreviews.get(attachment.id)!;
+        attachmentPreviews.set(attachment.id, { ...preview, attachment: clone(attachment) });
+      }
       const firstUserMessage = !conversation.messages.some(({ role }) => role === "user");
       if (firstUserMessage) {
         conversation.title = content.trim().slice(0, 42) || "New conversation";

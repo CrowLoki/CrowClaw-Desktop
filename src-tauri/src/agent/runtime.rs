@@ -3,8 +3,8 @@ use std::{collections::HashSet, mem, sync::Arc};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::{
-    builtin_tool_definitions, ApprovalDecision, ApprovalStatus, ApprovalToken, ProposedAction,
-    ToolExecutor, ToolRequest,
+    builtin_tool_definitions, image_generation_tool_definition, ApprovalDecision, ApprovalStatus,
+    ApprovalToken, GeneratedImage, ProposedAction, ToolExecutor, ToolOutput, ToolRequest,
 };
 
 use super::{
@@ -45,6 +45,8 @@ pub struct AgentSession {
     pub tool_calls: usize,
     #[serde(default)]
     pub pending_actions: Vec<PendingToolCall>,
+    #[serde(skip)]
+    pub generated_images: Vec<GeneratedImage>,
 }
 
 impl AgentSession {
@@ -66,6 +68,7 @@ impl AgentSession {
             iterations: 0,
             tool_calls: 0,
             pending_actions: Vec::new(),
+            generated_images: Vec::new(),
         })
     }
 
@@ -168,6 +171,7 @@ impl AgentRuntime {
             return Err(AgentError::Cancelled);
         }
 
+        self.enforce_history_boundary(session)?;
         if let Some(outcome) = self.process_pending(session, cancellation).await? {
             return Ok(outcome);
         }
@@ -191,7 +195,13 @@ impl AgentRuntime {
                     ChatCompletionRequest {
                         model: session.model.clone(),
                         messages: session.messages.clone(),
-                        tools: builtin_tool_definitions(),
+                        tools: {
+                            let mut tools = builtin_tool_definitions();
+                            if self.tools.image_generation_available() {
+                                tools.push(image_generation_tool_definition());
+                            }
+                            tools
+                        },
                         temperature: None,
                         max_tokens: None,
                     },
@@ -212,7 +222,9 @@ impl AgentRuntime {
                     });
                 }
                 session.messages.push(completion.message.clone());
-                self.enforce_history_boundary(session)?;
+                // A validated final answer must survive even if retaining it
+                // exceeds the next-request history budget. The entry/loop
+                // checks still reject any subsequent request before inference.
                 return Ok(AgentRunOutcome::Completed {
                     message: completion.message,
                     reported_model: completion.model,
@@ -303,6 +315,13 @@ impl AgentRuntime {
                 .tools
                 .execute(&pending.proposal.approval_token, cancellation)
                 .await?;
+            if let crate::tools::ToolExecution::Executed {
+                output: ToolOutput::GeneratedImage { image },
+                ..
+            } = &execution
+            {
+                session.generated_images.push(image.clone());
+            }
             let content =
                 serde_json::to_string(&execution).map_err(|error| AgentError::Serialization {
                     message: error.to_string(),
@@ -321,17 +340,104 @@ impl AgentRuntime {
     }
 
     fn enforce_history_boundary(&self, session: &AgentSession) -> Result<(), AgentError> {
-        let bytes = serde_json::to_vec(&session.messages)
-            .map_err(|error| AgentError::Serialization {
+        super::protocol::validate_message_attachments(&session.messages)?;
+        let mut counter = HistoryByteCount::default();
+        serde_json::to_writer(&mut counter, &HistoryProjection(&session.messages)).map_err(
+            |error| AgentError::Serialization {
                 message: error.to_string(),
-            })?
-            .len();
-        if bytes > self.limits.max_history_bytes {
+            },
+        )?;
+        if counter.0 > self.limits.max_history_bytes {
             return Err(AgentError::BoundaryExceeded {
                 boundary: "history_bytes".into(),
                 limit: self.limits.max_history_bytes,
             });
         }
+        Ok(())
+    }
+}
+
+/// Count the original message shape, retaining attachment metadata but not their
+/// separately bounded binary/base64 payloads. Attached text stays in the text
+/// history budget. All large fields remain borrowed.
+struct HistoryProjection<'a>(&'a [ChatMessage]);
+impl Serialize for HistoryProjection<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for message in self.0 {
+            sequence.serialize_element(&HistoryMessage(message))?;
+        }
+        sequence.end()
+    }
+}
+
+struct HistoryMessage<'a>(&'a ChatMessage);
+impl Serialize for HistoryMessage<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use super::protocol::AttachmentContent;
+        use serde::ser::SerializeMap;
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Metadata<'a> {
+            Text { name: &'a str, text: &'a str },
+            Image { name: &'a str, media_type: &'a str },
+            File { name: &'a str, media_type: &'a str },
+        }
+        // Exhaustively destructure so new message fields require a budget decision.
+        let ChatMessage {
+            role,
+            content,
+            attachments,
+            tool_calls,
+            tool_call_id,
+            name,
+            provider_context,
+        } = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("role", role)?;
+        if let Some(content) = content {
+            map.serialize_entry("content", content)?;
+        }
+        if !attachments.is_empty() {
+            let metadata: Vec<_> = attachments
+                .iter()
+                .map(|part| match part {
+                    AttachmentContent::Text { name, text } => Metadata::Text { name, text },
+                    AttachmentContent::Image {
+                        name, media_type, ..
+                    } => Metadata::Image { name, media_type },
+                    AttachmentContent::File {
+                        name, media_type, ..
+                    } => Metadata::File { name, media_type },
+                })
+                .collect();
+            map.serialize_entry("attachments", &metadata)?;
+        }
+        if !tool_calls.is_empty() {
+            map.serialize_entry("toolCalls", tool_calls)?;
+        }
+        if let Some(id) = tool_call_id {
+            map.serialize_entry("toolCallId", id)?;
+        }
+        if let Some(name) = name {
+            map.serialize_entry("name", name)?;
+        }
+        if let Some(context) = provider_context {
+            map.serialize_entry("providerContext", context)?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Default)]
+struct HistoryByteCount(usize);
+impl std::io::Write for HistoryByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -363,6 +469,222 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    #[tokio::test]
+    async fn final_answer_survives_history_overflow_but_next_request_is_rejected() {
+        let answer = ChatMessage::assistant("complete answer ".repeat(64));
+        let provider = Arc::new(FakeProvider::new([ChatCompletion {
+            id: None,
+            model: Some("reported-model".into()),
+            message: answer.clone(),
+            finish_reason: Some("stop".into()),
+            usage: None,
+        }]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits {
+                max_history_bytes: 256,
+                ..AgentLimits::default()
+            },
+        )
+        .unwrap();
+        let mut session = AgentSession::new("test", vec![ChatMessage::user("hello")]).unwrap();
+        let outcome = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            AgentRunOutcome::Completed { message, reported_model, .. }
+                if message == answer && reported_model.as_deref() == Some("reported-model")
+        ));
+        assert_eq!(session.messages.last(), Some(&answer));
+        assert_eq!(provider.requests().len(), 1);
+
+        session.push_user_message("continue").unwrap();
+        let error = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::agent::AgentError::BoundaryExceeded { boundary, limit: 256 }
+                if boundary == "history_bytes"
+        ));
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(session.iterations, 1);
+        assert_eq!(session.messages[1], answer);
+    }
+
+    #[tokio::test]
+    async fn attachment_history_keeps_four_mib_text_and_tool_limit() {
+        let provider = Arc::new(FakeProvider::new([]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits::default(),
+        )
+        .unwrap();
+        for message in [
+            ChatMessage::user("x".repeat(4 * 1024 * 1024 + 1)),
+            ChatMessage::tool("call", "read", "x".repeat(4 * 1024 * 1024 + 1)),
+        ] {
+            let mut session = AgentSession::new("test", vec![message]).unwrap();
+            let error = runtime
+                .run_until_blocked(&mut session, &CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, crate::agent::AgentError::BoundaryExceeded { ref boundary, limit: 4_194_304 } if boundary == "history_bytes")
+            );
+        }
+        assert!(provider.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn attachment_history_counts_attached_text_before_provider() {
+        use crate::agent::protocol::AttachmentContent;
+        let provider = Arc::new(FakeProvider::new([]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits::default(),
+        )
+        .unwrap();
+        let mut user = ChatMessage::user("");
+        user.attachments = (0..5)
+            .map(|i| AttachmentContent::Text {
+                name: format!("text-{i}.txt"),
+                text: "x".repeat(1024 * 1024),
+            })
+            .collect();
+        let mut session = AgentSession::new("test", vec![user]).unwrap();
+        let error = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error,crate::agent::AgentError::BoundaryExceeded{ref boundary,limit:4_194_304} if boundary=="history_bytes")
+        );
+        assert!(provider.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn attachment_history_allows_large_attachment_only_user_before_provider() {
+        use crate::agent::protocol::AttachmentContent;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let provider = Arc::new(FakeProvider::new([ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant("accepted"),
+            finish_reason: Some("stop".into()),
+            usage: None,
+        }]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits::default(),
+        )
+        .unwrap();
+        let mut user = ChatMessage::user("");
+        user.content = None;
+        user.attachments.push(AttachmentContent::Image {
+            name: "image.png".into(),
+            media_type: "image/png".into(),
+            data_base64: STANDARD.encode(vec![1; 5 * 1024 * 1024]),
+        });
+        let mut session = AgentSession::new("test", vec![user]).unwrap();
+        assert!(matches!(
+            runtime
+                .run_until_blocked(&mut session, &CancellationToken::new())
+                .await
+                .unwrap(),
+            AgentRunOutcome::Completed { .. }
+        ));
+        assert_eq!(provider.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn attachment_history_validates_payload_before_provider() {
+        use crate::agent::protocol::AttachmentContent;
+        let provider = Arc::new(FakeProvider::new([]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits::default(),
+        )
+        .unwrap();
+        for (data, count) in [("YR==", 1), ("YQ==", 9)] {
+            let mut user = ChatMessage::user("");
+            user.attachments = vec![
+                AttachmentContent::Image {
+                    name: "image.png".into(),
+                    media_type: "image/png".into(),
+                    data_base64: data.into()
+                };
+                count
+            ];
+            let mut session = AgentSession::new("test", vec![user]).unwrap();
+            assert!(matches!(
+                runtime
+                    .run_until_blocked(&mut session, &CancellationToken::new())
+                    .await
+                    .unwrap_err(),
+                crate::agent::AgentError::Provider(ProviderError::InvalidConfiguration { .. })
+            ));
+        }
+        assert!(provider.requests().is_empty());
+    }
+
+    #[test]
+    fn attachment_history_projection_preserves_metadata_and_legacy_budget() {
+        use crate::agent::protocol::AttachmentContent;
+        let messages = vec![
+            ChatMessage::system("rules"),
+            ChatMessage::user("question"),
+            ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![AssistantToolCall {
+                    id: "call".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":"file"}),
+                }],
+            ),
+            ChatMessage::tool("call", "read", "result"),
+        ];
+        assert_eq!(
+            serde_json::to_vec(&super::HistoryProjection(&messages)).unwrap(),
+            serde_json::to_vec(&messages).unwrap()
+        );
+        let mut user = ChatMessage::user("question");
+        user.attachments.push(AttachmentContent::Text {
+            name: "note.txt".into(),
+            text: "payload".into(),
+        });
+        let projection = serde_json::to_value(super::HistoryProjection(&[user])).unwrap();
+        assert_eq!(
+            projection[0]["attachments"][0],
+            json!({"type":"text","name":"note.txt","text":"payload"})
+        );
+        let mut user = ChatMessage::user("");
+        user.attachments.push(AttachmentContent::Text {
+            name: "x".repeat(4 * 1024 * 1024 + 1),
+            text: "payload".into(),
+        });
+        let runtime = AgentRuntime::new(
+            Arc::new(FakeProvider::new([])),
+            ToolExecutor::new(ToolPolicy::default()).unwrap(),
+            AgentLimits::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime
+                .enforce_history_boundary(&AgentSession::new("test", vec![user]).unwrap())
+                .unwrap_err(),
+            crate::agent::AgentError::BoundaryExceeded { .. }
+        ));
+    }
+
     use super::{AgentLimits, AgentRunOutcome, AgentRuntime, AgentSession};
     use crate::{
         agent::{
@@ -370,8 +692,8 @@ mod tests {
             ChatMessage, ChatProvider, ProviderError,
         },
         tools::{
-            ApprovalDecision, MemoryBackend, MemorySearchMatch, RememberedMemory, ToolError,
-            ToolExecutor, ToolPolicy,
+            ApprovalDecision, GeneratedImage, ImageGenerationBackend, MemoryBackend,
+            MemorySearchMatch, RememberedMemory, ToolError, ToolExecutor, ToolPolicy,
         },
     };
 
@@ -449,6 +771,105 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("the real fixture content"));
+    }
+
+    struct FakeImageGenerator(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl ImageGenerationBackend for FakeImageGenerator {
+        async fn generate(
+            &self,
+            prompt: &str,
+            quality: &str,
+            size: &str,
+            cancellation: &CancellationToken,
+        ) -> Result<GeneratedImage, ToolError> {
+            assert_eq!(prompt, "a purple crow");
+            assert_eq!(quality, "medium");
+            assert_eq!(size, "1536x1024");
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(GeneratedImage {
+                id: "image-id".into(),
+                name: "crowclaw-image-test.png".into(),
+                media_type: "image/png".into(),
+                model: "gpt-image-2".into(),
+                bytes: vec![1, 2, 3, 4],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn image_generation_is_offered_only_with_a_backend_and_waits_for_approval() {
+        let first = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![AssistantToolCall {
+                    id: "image-call".into(),
+                    name: "generate_image".into(),
+                    arguments: json!({"prompt":"a purple crow"}),
+                }],
+            ),
+            finish_reason: Some("tool_calls".into()),
+            usage: None,
+        };
+        let second = ChatCompletion {
+            id: None,
+            model: Some("gpt-6-luna".into()),
+            message: ChatMessage::assistant("Image generated."),
+            finish_reason: Some("stop".into()),
+            usage: None,
+        };
+        let provider = Arc::new(FakeProvider::new([first, second]));
+        let image = Arc::new(FakeImageGenerator(std::sync::atomic::AtomicUsize::new(0)));
+        let tools = ToolExecutor::new(ToolPolicy::default())
+            .unwrap()
+            .with_image_generator(image.clone());
+        let runtime = AgentRuntime::new(provider.clone(), tools, AgentLimits::default()).unwrap();
+        let mut session =
+            AgentSession::new("gpt-6-luna", vec![ChatMessage::user("draw a crow")]).unwrap();
+        let waiting = runtime
+            .run_until_blocked(&mut session, &CancellationToken::new())
+            .await
+            .unwrap();
+        let action = match waiting {
+            AgentRunOutcome::AwaitingApproval { actions, .. } => actions[0].clone(),
+            other => panic!("expected image approval, got {other:?}"),
+        };
+        assert_eq!(image.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(provider.requests()[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "generate_image"));
+        runtime
+            .resolve_action(&session, &action.approval_token, ApprovalDecision::Approve)
+            .unwrap();
+        assert!(matches!(
+            runtime
+                .run_until_blocked(&mut session, &CancellationToken::new())
+                .await
+                .unwrap(),
+            AgentRunOutcome::Completed { .. }
+        ));
+        assert_eq!(image.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(session.generated_images[0].id, "image-id");
+        let requests = provider.requests();
+        let result = requests[1]
+            .messages
+            .iter()
+            .find(|m| m.name.as_deref() == Some("generate_image"))
+            .unwrap()
+            .content
+            .as_deref()
+            .unwrap();
+        assert!(result.contains("image-id"));
+        assert!(!result.contains("bytes"));
+        assert!(!result.contains("AQIDBA=="));
+        let local = ToolExecutor::new(ToolPolicy::default()).unwrap();
+        assert!(!local.image_generation_available());
     }
 
     #[tokio::test]

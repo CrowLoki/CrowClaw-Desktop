@@ -25,6 +25,7 @@ fn saved_account(storage: &Storage) -> MembershipAccount {
             .map(str::to_string)
             .collect(),
         access_expires_at_ms: (protocol::unix_seconds().unwrap() as i64 + 3600) * 1000,
+        codex_images: None,
     };
     storage
         .membership_add_account(

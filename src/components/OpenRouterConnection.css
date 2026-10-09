@@ -1,0 +1,13 @@
+.openrouter-panel { display: grid; gap: 12px; min-width: 0; }
+.openrouter-panel h2, .openrouter-panel p { margin: 0; }
+.openrouter-panel input, .openrouter-panel select {
+  width: 100%; min-width: 0; min-height: 40px; padding: 9px 12px;
+  border: 1px solid var(--border, #64748b); border-radius: 8px;
+  color: inherit; background: var(--surface, #171c26); font: inherit;
+}
+.openrouter-panel :is(input, select, button):focus-visible { outline: 2px solid #a5b4fc; outline-offset: 3px; }
+.openrouter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.openrouter-metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 0; }
+.openrouter-metadata dt { font-weight: 600; }
+.openrouter-metadata dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.openrouter-panel [role="alert"] { color: #fca5a5; }

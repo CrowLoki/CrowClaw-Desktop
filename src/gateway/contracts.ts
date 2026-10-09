@@ -1,4 +1,6 @@
 import type { ConversationComposerSnapshot, ConversationModelChoice, ComposerModelSource } from './composerContracts';
+import type { AttachmentPreview, AttachmentSummary } from './attachmentContracts';
+import type { FreeCatalog, OpenRouterConnectRequest } from './openRouterContracts';
 
 export type ProviderKind = "lm-studio" | "ollama" | "llama-cpp" | "custom";
 
@@ -11,7 +13,7 @@ export type ModelEndpointDraft = {
 };
 
 export type ModelConnection = Omit<ModelEndpointDraft, "apiKey" | "provider"> & {
-  provider: ProviderKind | "chatgpt";
+  provider: ProviderKind | "chatgpt" | "openrouter";
   id: string;
   status: "connected" | "disconnected" | "error";
   connectedAt: string | null;
@@ -45,6 +47,13 @@ export type MembershipSnapshot = { accounts: MembershipAccount[]; welcomeAcknowl
 export type MembershipSignInRequest = { requestId: string; label: string; accountId: string | null };
 export type MembershipModelRequest = { accountId: string; model: string; reasoningEffort: string | null };
 export type MembershipSignOutResult = { account: MembershipAccount; remoteRevoked: boolean; detail: string };
+export type CodexImageAuthStatus = {
+  state: "not_connected" | "pending" | "connected" | "expired";
+  verificationUrl: string | null;
+  userCode: string | null;
+  pollIntervalSeconds: number | null;
+  message: string | null;
+};
 
 export type DiscoveredEndpoint = ModelEndpointDraft & {
   id: string;
@@ -63,6 +72,7 @@ export type MessageRole = "user" | "assistant" | "system";
 export type MessageStatus = "sent" | "streaming" | "waiting-approval" | "failed";
 
 export type ConversationMessage = {
+  attachments?: AttachmentSummary[];
   id: string;
   role: MessageRole;
   content: string;
@@ -122,7 +132,7 @@ export type PendingAction = {
   id: string;
   taskId: string;
   conversationId: string;
-  kind: "read-files" | "write-file" | "run-command" | "open-application" | "memory";
+  kind: "read-files" | "write-file" | "run-command" | "open-application" | "memory" | "image-generation";
   title: string;
   summary: string;
   target: string;
@@ -230,6 +240,12 @@ export type EvolutionSnapshot = { active: EvolutionRevision; observations: Evolu
 export type EvolutionDraftRequest = { title: string; rationale: string; instructions: string; sourceTaskIds: string[]; baseRevision: number };
 
 export interface CrowClawGateway {
+  openRouterCatalog(profileId?: string): Promise<FreeCatalog>;
+  connectOpenRouter(request: OpenRouterConnectRequest): Promise<ModelConnection>;
+  disconnectOpenRouter(profileId: string): Promise<void>;
+  selectAttachments(conversationId: string, revision: number): Promise<ConversationComposerSnapshot>;
+  removeAttachment(conversationId: string, revision: number, attachmentId: string): Promise<ConversationComposerSnapshot>;
+  previewAttachment(conversationId: string, attachmentId: string): Promise<AttachmentPreview>;
   getComposer(conversationId: string): Promise<ConversationComposerSnapshot>;
   saveComposerDraft(conversationId: string, revision: number, draft: string): Promise<ConversationComposerSnapshot>;
   chooseComposerModel(conversationId: string, revision: number, selection: ConversationModelChoice): Promise<ConversationComposerSnapshot>;
@@ -242,6 +258,10 @@ export interface CrowClawGateway {
   useMembershipModel(request: MembershipModelRequest): Promise<ModelConnection>;
   acknowledgeMembershipWelcome(): Promise<void>;
   manageMembershipUsage(): Promise<void>;
+  beginCodexImageAuthorization(accountId: string): Promise<CodexImageAuthStatus>;
+  pollCodexImageAuthorization(accountId: string): Promise<CodexImageAuthStatus>;
+  codexImageAuthorizationStatus(accountId: string): Promise<CodexImageAuthStatus>;
+  cancelCodexImageAuthorization(accountId: string): Promise<boolean>;
   evolutionSnapshot(): Promise<EvolutionSnapshot>;
   saveEvolutionFeedback(request: { taskId: string; rating: EvolutionRating; note: string }): Promise<void>;
   draftEvolution(request: EvolutionDraftRequest): Promise<EvolutionProposal>;
