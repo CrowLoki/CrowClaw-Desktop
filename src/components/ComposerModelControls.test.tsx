@@ -42,7 +42,7 @@ function nativePopoverFixture(invoker: boolean) {
   }
   function toggle(element: HTMLElement, state: "open" | "closed") {
     element.dataset.testPopoverState = state;
-    const event = new Event("beforetoggle");
+    const event = new Event("toggle");
     Object.defineProperty(event, "newState", { value: state });
     element.dispatchEvent(event);
   }
@@ -348,7 +348,7 @@ describe("ComposerModelControls", () => {
       const popup = document.getElementById(trigger.getAttribute("aria-controls")!)!;
       expect(trigger).toHaveAttribute("commandfor", popup.id);
       expect(trigger).toHaveAttribute("command", "toggle-popover");
-      // The browser executes this builtin command, then emits beforetoggle.
+      // The browser finishes this builtin command, then emits toggle.
       act(() => native.toggle(popup, "open"));
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(native.show).not.toHaveBeenCalled();
@@ -358,6 +358,24 @@ describe("ComposerModelControls", () => {
       expect(trigger).toHaveFocus();
       unmount();
     } finally { native.restore(); }
+  });
+
+  it("does not call showPopover during the browser's beforetoggle show operation", () => {
+    const native=nativePopoverFixture(true);
+    try {
+      const {unmount}=render(<ComposerModelControls {...defaults()} />);
+      const trigger=screen.getByRole('button',{name:/Model & effort/});
+      const popup=document.getElementById(trigger.getAttribute('aria-controls')!)!;
+      const before=new Event('beforetoggle');
+      Object.defineProperty(before,'newState',{value:'open'});
+      act(()=>popup.dispatchEvent(before));
+      expect(native.show).not.toHaveBeenCalled();
+      expect(trigger).toHaveAttribute('aria-expanded','false');
+      act(()=>native.toggle(popup,'open'));
+      expect(trigger).toHaveAttribute('aria-expanded','true');
+      expect(native.show).not.toHaveBeenCalled();
+      unmount();
+    } finally {native.restore();}
   });
 
   it("applies explicit none separately from provider default", async () => {

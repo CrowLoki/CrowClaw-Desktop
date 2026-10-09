@@ -72,8 +72,10 @@ export function ComposerModelControls({ value, sources, busy = false, error, onC
       setOpen(opening);
       if (!opening && element.contains(document.activeElement)) trigger.current?.focus();
     };
-    element.addEventListener("beforetoggle", sync);
-    return () => element.removeEventListener("beforetoggle", sync);
+    // React can flush effects while beforetoggle's native show operation is
+    // still running. Synchronize only after the browser finishes that operation.
+    element.addEventListener("toggle", sync);
+    return () => element.removeEventListener("toggle", sync);
   }, [nativePopover]);
 
   useEffect(() => {
