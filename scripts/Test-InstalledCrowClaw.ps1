@@ -491,7 +491,7 @@ function Start-ModelFixture {
 }
 
 function Initialize-InstalledProfile {
-    Invoke-NativeUi @('run-code', 'async (page) => { await page.getByRole("heading",{name:/Your local agent/}).waitFor(); await page.getByText("Looking locally",{exact:true}).waitFor({state:"hidden"}); await page.getByText("Custom",{selector:"strong",exact:true}).click(); await page.getByLabel("Endpoint URL",{exact:true}).fill("http://127.0.0.1:32123/v1"); await page.getByLabel("Connection name",{exact:true}).fill("Installed acceptance model"); await page.getByLabel("Model name",{exact:true}).fill("crowclaw-acceptance-model"); await page.getByRole("button",{name:"Test connection",exact:true}).click(); await page.getByRole("button",{name:"Connect and open CrowClaw",exact:true}).click({timeout:20000}); await page.getByRole("navigation",{name:"CrowClaw sections",exact:true}).waitFor(); }')
+    Invoke-NativeUi @('run-code', 'async (page) => { await page.getByRole("heading",{name:/Your local agent/}).waitFor(); await page.getByText("Looking locally",{exact:true}).waitFor({state:"hidden"}); await page.getByText("Custom",{selector:"strong",exact:true}).click(); await page.getByLabel("Endpoint URL",{exact:true}).fill("http://127.0.0.1:32123/v1"); await page.getByPlaceholder("My local model",{exact:true}).fill("Installed acceptance model"); await page.getByLabel("Model name",{exact:true}).fill("crowclaw-acceptance-model"); await page.getByRole("button",{name:"Test connection",exact:true}).click(); await page.getByRole("button",{name:"Connect and open CrowClaw",exact:true}).click({timeout:20000}); await page.getByRole("navigation",{name:"CrowClaw sections",exact:true}).waitFor(); }')
     $script:qaChecks.startMenuAndOnboarding = $true
     $qaSeedProgram = @'
 async (page) => {
