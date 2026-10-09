@@ -158,6 +158,24 @@ struct LiveTask {
 }
 
 impl AppState {
+    pub(crate) fn exit_when_window_destroyed(&self) -> bool {
+        if load_settings(&self.storage).is_ok_and(|settings| settings.keep_running_on_close) {
+            return false;
+        }
+        self.memory_shutdown.cancel();
+        if let Ok(tasks) = self.active_tasks.lock() {
+            for task in tasks.values() {
+                task.cancellation.cancel();
+            }
+        }
+        if let Ok(requests) = self.evolution_requests.lock() {
+            for token in requests.values() {
+                token.cancel();
+            }
+        }
+        true
+    }
+
     pub fn open(app_data_directory: PathBuf) -> Result<Self, StorageError> {
         let storage = Arc::new(Storage::open(app_data_directory)?);
         let crowquant = Arc::new(CrowQuantMemoryService::new(storage.clone()));
@@ -1532,6 +1550,18 @@ pub async fn crowclaw_model_connect(
     request: ModelEndpointDraft,
 ) -> Result<ModelConnection, String> {
     connect_local_model(&state, request).await
+}
+
+#[tauri::command]
+pub fn crowclaw_model_set_default(
+    state: State<'_, AppState>,
+    provider_profile_id: String,
+) -> Result<ModelConnection, String> {
+    let profile = state
+        .storage
+        .set_default_provider_profile(&provider_profile_id)
+        .map_err(display_error)?;
+    Ok(connection_view(&profile, "configured", None))
 }
 
 async fn connect_local_model(
@@ -3079,6 +3109,27 @@ fn agent_limits_for_model(provider_kind: &str, model: &str) -> AgentLimits {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn destroyed_main_window_shutdown_respects_background_setting() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let state = super::AppState::open(directory.path().to_path_buf()).unwrap();
+        let mut settings = super::AppSettings::default();
+        settings.keep_running_on_close = true;
+        state
+            .storage
+            .set_setting(super::SETTINGS_KEY, &settings)
+            .unwrap();
+        assert!(!state.exit_when_window_destroyed());
+        assert!(!state.memory_shutdown.is_cancelled());
+        settings.keep_running_on_close = false;
+        state
+            .storage
+            .set_setting(super::SETTINGS_KEY, &settings)
+            .unwrap();
+        assert!(state.exit_when_window_destroyed());
+        assert!(state.memory_shutdown.is_cancelled());
+    }
+
     #[test]
     fn luna_membership_history_budget_preserves_other_provider_defaults() {
         let defaults = super::AgentLimits::default();

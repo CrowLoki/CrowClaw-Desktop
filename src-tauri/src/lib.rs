@@ -26,7 +26,8 @@ use app::{
     crowclaw_memory_export, crowclaw_memory_rebuild, crowclaw_memory_search,
     crowclaw_memory_semantic_sync, crowclaw_memory_status, crowclaw_memory_sync,
     crowclaw_memory_withdraw, crowclaw_model_connect, crowclaw_model_discover,
-    crowclaw_model_test_connection, crowclaw_settings_save, crowclaw_task_cancel, AppState,
+    crowclaw_model_set_default, crowclaw_model_test_connection, crowclaw_settings_save,
+    crowclaw_task_cancel, AppState,
 };
 use tauri::Manager;
 
@@ -52,6 +53,15 @@ pub fn run() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<AppState>() {
+                    if state.exit_when_window_destroyed() {
+                        window.app_handle().exit(0);
+                    }
+                }
+            }
+        })
         .setup(move |app| {
             let app_data_directory = match &options.profile_directory {
                 Some(directory) => directory.clone(),
@@ -90,6 +100,7 @@ pub fn run() {
             crowclaw_model_discover,
             crowclaw_model_test_connection,
             crowclaw_model_connect,
+            crowclaw_model_set_default,
             crowclaw_conversation_create,
             crowclaw_conversation_get,
             crowclaw_folder_select,

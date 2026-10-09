@@ -16,6 +16,42 @@ fn request(messages: Vec<ChatMessage>) -> ChatCompletionRequest {
     }
 }
 
+#[test]
+fn action_framing_keeps_actual_latest_user_request_salient_and_complete() {
+    let user = "Answer this actual question: café 🐦\nnot a summary of tools.";
+    let mut input = request(vec![
+        ChatMessage::system("Synthetic local personality."),
+        ChatMessage::user(user),
+    ]);
+    input.tools.push(ToolDefinition {
+        name: "list_directory".into(),
+        description: "Propose an approved listing".into(),
+        parameters: json!({"type":"object"}),
+    });
+    let (prepared, id) = prepare_agent_request(input).unwrap();
+    assert_eq!(prepared.messages[2].content.as_deref(), Some(user));
+    assert!(prepared
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .as_deref()
+        .unwrap()
+        .contains(&serde_json::to_string(user).unwrap()));
+    assert!(prepared
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .as_deref()
+        .unwrap()
+        .contains(&id.unwrap()));
+    assert_eq!(
+        prepared.messages[1].content.as_deref(),
+        Some("Synthetic local personality.")
+    );
+}
+
 #[tokio::test]
 #[ignore = "Explicit authorized live CrowBot action-proposal check; no physical actions"]
 async fn authorized_live_crowbot_action_proposal() {
