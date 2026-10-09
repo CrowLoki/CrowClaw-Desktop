@@ -12,6 +12,26 @@ const settings: AppSettings = {
 };
 
 describe("Local personality selection", () => {
+  it("offers and saves a persistent automatic choice for local actions", async()=>{
+    const onSave=vi.fn().mockResolvedValue(undefined);
+    const user=userEvent.setup();
+    render(<SettingsView settings={settings} onSave={onSave} />);
+    await user.selectOptions(screen.getByLabelText(/Read local files/),"allow");
+    await user.selectOptions(screen.getByLabelText(/Run local commands/),"allow");
+    await user.selectOptions(screen.getByLabelText(/Remember local context/),"allow");
+    await user.click(screen.getByRole("button",{name:"Save settings"}));
+    await waitFor(()=>expect(onSave).toHaveBeenCalledWith({...settings,permissions:{readFiles:"allow",writeFiles:"allow",runCommands:"allow"}}));
+  });
+  it("keeps image confirmation off by default and saves only an explicitly chosen preference", async () => {
+    const onSave=vi.fn().mockResolvedValue(undefined);
+    const user=userEvent.setup();
+    render(<SettingsView settings={settings} onSave={onSave} />);
+    const confirmation=screen.getByLabelText(/Ask before generating images/);
+    expect(confirmation).not.toBeChecked();
+    await user.click(confirmation);
+    await user.click(screen.getByRole("button",{name:"Save settings"}));
+    await waitFor(()=>expect(onSave).toHaveBeenCalledWith({...settings,confirmImageGeneration:true}));
+  });
   it("saves the chosen personality without changing permissions or other settings", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();

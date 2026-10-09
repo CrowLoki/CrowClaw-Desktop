@@ -22,6 +22,13 @@ function show(value: Partial<Preview> = {}, summary: Partial<AttachmentSummary> 
 }
 
 describe('AttachmentPreview', () => {
+  it('opens generated image previews without an extra click', async()=>{
+    const selected={...attachment,kind:'image' as const,mediaType:'image/jpeg',name:'generated.jpg'};
+    const previewAttachment=vi.fn(async()=>({attachment:selected,text:null,dataUrl:'data:image/jpeg;base64,YWJj'}));
+    render(<AttachmentPreview attachment={selected} previewAttachment={previewAttachment} autoPreview />);
+    expect(await screen.findByRole('img')).toHaveAttribute('src','data:image/jpeg;base64,YWJj');
+    expect(previewAttachment).toHaveBeenCalledWith('chat-a','a');
+  });
   it('shows filename, size, remove, and text literally without interpreting markup', async () => {
     const text = '<script>alert(1)</script><svg onload="alert(1)">literal code</svg>';
     const { container, previewAttachment, onRemove } = show({ text });

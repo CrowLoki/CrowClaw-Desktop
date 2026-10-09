@@ -3,8 +3,8 @@ use std::{collections::HashSet, mem, sync::Arc};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::{
-    builtin_tool_definitions, image_generation_tool_definition, ApprovalDecision, ApprovalStatus,
-    ApprovalToken, GeneratedImage, ProposedAction, ToolExecutor, ToolOutput, ToolRequest,
+    builtin_tool_definitions, ApprovalDecision, ApprovalStatus, ApprovalToken, GeneratedImage,
+    ProposedAction, ToolExecutor, ToolOutput, ToolRequest,
 };
 
 use super::{
@@ -47,6 +47,8 @@ pub struct AgentSession {
     pub pending_actions: Vec<PendingToolCall>,
     #[serde(skip)]
     pub generated_images: Vec<GeneratedImage>,
+    #[serde(skip)]
+    completed_image_prompts: HashSet<String>,
 }
 
 impl AgentSession {
@@ -69,6 +71,7 @@ impl AgentSession {
             tool_calls: 0,
             pending_actions: Vec::new(),
             generated_images: Vec::new(),
+            completed_image_prompts: HashSet::new(),
         })
     }
 
@@ -80,6 +83,7 @@ impl AgentSession {
             });
         }
         self.messages.push(ChatMessage::user(content));
+        self.completed_image_prompts.clear();
         Ok(())
     }
 }
@@ -197,8 +201,8 @@ impl AgentRuntime {
                         messages: session.messages.clone(),
                         tools: {
                             let mut tools = builtin_tool_definitions();
-                            if self.tools.image_generation_available() {
-                                tools.push(image_generation_tool_definition());
+                            if let Some(definition) = self.tools.image_generation_definition() {
+                                tools.push(definition);
                             }
                             tools
                         },
@@ -269,18 +273,38 @@ impl AgentRuntime {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let mut pending = Vec::with_capacity(requests.len());
+            let mut automatic = Vec::new();
             for (call, request) in tool_calls.iter().zip(requests) {
+                if let ToolRequest::GenerateImage { prompt, .. } = &request {
+                    if session.completed_image_prompts.contains(prompt.trim()) {
+                        return Err(AgentError::InvalidToolCall {tool_name:call.name.clone(),message:"This exact image was already generated for the current request; the duplicate was not executed".into()});
+                    }
+                }
+                let automatic_decision = self.tools.automatic_decision(&request);
+                let run_automatically = automatic_decision.is_some();
                 let proposal = self.tools.propose(request)?;
-                pending.push(PendingToolCall {
+                if let Some(decision) = automatic_decision {
+                    self.tools.resolve(&proposal.approval_token, decision)?;
+                }
+                let entry = PendingToolCall {
                     provider_tool_call_id: call.id.clone(),
                     proposal,
-                });
+                };
+                if run_automatically {
+                    automatic.push(entry);
+                } else {
+                    pending.push(entry);
+                }
             }
 
-            session.tool_calls += pending.len();
+            session.tool_calls += pending.len() + automatic.len();
             session.messages.push(completion.message);
             session.pending_actions = pending;
+            self.execute_calls(session, automatic, cancellation).await?;
             self.enforce_history_boundary(session)?;
+            if session.pending_actions.is_empty() {
+                continue;
+            }
             return Ok(awaiting_outcome(session));
         }
     }
@@ -310,6 +334,17 @@ impl AgentRuntime {
         }
 
         let pending_actions = mem::take(&mut session.pending_actions);
+        self.execute_calls(session, pending_actions, cancellation)
+            .await?;
+        Ok(None)
+    }
+
+    async fn execute_calls(
+        &self,
+        session: &mut AgentSession,
+        pending_actions: Vec<PendingToolCall>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), AgentError> {
         for pending in pending_actions {
             let execution = self
                 .tools
@@ -321,6 +356,11 @@ impl AgentRuntime {
             } = &execution
             {
                 session.generated_images.push(image.clone());
+                if let ToolRequest::GenerateImage { prompt, .. } = &pending.proposal.request {
+                    session
+                        .completed_image_prompts
+                        .insert(prompt.trim().to_owned());
+                }
             }
             let content =
                 serde_json::to_string(&execution).map_err(|error| AgentError::Serialization {
@@ -336,7 +376,7 @@ impl AgentRuntime {
         if cancellation.is_cancelled() {
             return Err(AgentError::Cancelled);
         }
-        Ok(None)
+        Ok(())
     }
 
     fn enforce_history_boundary(&self, session: &AgentSession) -> Result<(), AgentError> {
@@ -797,6 +837,110 @@ mod tests {
                 model: "gpt-image-2".into(),
                 bytes: vec![1, 2, 3, 4],
             })
+        }
+    }
+
+    #[tokio::test]
+    async fn saved_automatic_local_read_choice_runs_without_an_extra_confirmation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("fixture.txt");
+        fs::write(&path, "Actual allowed fixture content").unwrap();
+        let first = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![AssistantToolCall {
+                    id: "read-call".into(),
+                    name: "read_text_file".into(),
+                    arguments: json!({"path":path}),
+                }],
+            ),
+            finish_reason: Some("tool_calls".into()),
+            usage: None,
+        };
+        let second = ChatCompletion {
+            id: None,
+            model: None,
+            message: ChatMessage::assistant("Read it."),
+            finish_reason: Some("stop".into()),
+            usage: None,
+        };
+        let provider = Arc::new(FakeProvider::new([first, second]));
+        let tools = ToolExecutor::new(ToolPolicy::for_roots([dir.path().to_path_buf()]))
+            .unwrap()
+            .with_automatic_tools(vec!["read_text_file".into()]);
+        let runtime = AgentRuntime::new(provider.clone(), tools, AgentLimits::default()).unwrap();
+        let mut session =
+            AgentSession::new("test", vec![ChatMessage::user("Read my selected fixture")]).unwrap();
+        assert!(matches!(
+            runtime
+                .run_until_blocked(&mut session, &CancellationToken::new())
+                .await
+                .unwrap(),
+            AgentRunOutcome::Completed { .. }
+        ));
+        assert!(session.pending_actions.is_empty());
+        assert!(provider.requests()[1]
+            .messages
+            .iter()
+            .any(|m| m.role == crate::agent::ChatRole::Tool
+                && m.content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Actual allowed fixture content"))));
+    }
+
+    #[tokio::test]
+    async fn automatic_image_request_needs_no_confirmation_and_never_executes_a_duplicate() {
+        for repeat in [false, true] {
+            let proposal = |id: &str| ChatCompletion {
+                id: None,
+                model: None,
+                message: ChatMessage::assistant_with_tool_calls(
+                    None,
+                    vec![AssistantToolCall {
+                        id: id.into(),
+                        name: "generate_image".into(),
+                        arguments: json!({"prompt":"a purple crow"}),
+                    }],
+                ),
+                finish_reason: Some("tool_calls".into()),
+                usage: None,
+            };
+            let final_response = if repeat {
+                proposal("duplicate-call")
+            } else {
+                ChatCompletion {
+                    id: None,
+                    model: None,
+                    message: ChatMessage::assistant("Image generated."),
+                    finish_reason: Some("stop".into()),
+                    usage: None,
+                }
+            };
+            let provider = Arc::new(FakeProvider::new([proposal("first-call"), final_response]));
+            let image = Arc::new(FakeImageGenerator(std::sync::atomic::AtomicUsize::new(0)));
+            let tools = ToolExecutor::new(ToolPolicy::default())
+                .unwrap()
+                .with_image_generator(image.clone())
+                .with_automatic_images(true);
+            let runtime = AgentRuntime::new(provider, tools, AgentLimits::default()).unwrap();
+            let mut session =
+                AgentSession::new("test", vec![ChatMessage::user("draw a crow")]).unwrap();
+            let result = runtime
+                .run_until_blocked(&mut session, &CancellationToken::new())
+                .await;
+            if repeat {
+                assert!(matches!(
+                    result,
+                    Err(super::AgentError::InvalidToolCall { .. })
+                ));
+            } else {
+                assert!(matches!(result, Ok(AgentRunOutcome::Completed { .. })));
+            }
+            assert!(session.pending_actions.is_empty());
+            assert_eq!(session.generated_images.len(), 1);
+            assert_eq!(image.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
     }
 

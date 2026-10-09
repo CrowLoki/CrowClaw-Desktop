@@ -117,60 +117,68 @@ fn snapshots_are_durable_scoped_and_computed_from_bytes() {
 
 #[test]
 fn generated_image_is_bound_atomically_to_its_assistant_message() {
-    for next_status in [TaskStatus::Succeeded, TaskStatus::Failed] {
-        let (_dir, storage) = setup();
-        storage
-            .create_task(&TaskInput {
-                id: "image-task".into(),
-                conversation_id: Some("a".into()),
-                kind: "agent-turn".into(),
-                payload: serde_json::json!({}),
-            })
-            .unwrap();
-        storage
-            .update_task_status("image-task", TaskStatus::Running, None, None)
-            .unwrap();
-        let message = MessageInput {
-            id: "image-answer".into(),
-            conversation_id: "a".into(),
-            role: MessageRole::Assistant,
-            content: "Generated it.".into(),
-            metadata: serde_json::json!({"reportedModel":"gpt-6-luna"}),
-        };
-        let image=GeneratedImage{id:"generated-image".into(),name:"crowclaw-image-test.png".into(),media_type:"image/png".into(),model:"gpt-image-2".into(),bytes:STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XioAAAAASUVORK5CYII=").unwrap()};
-        storage
-            .finish_task_with_generated_images(
-                "image-task",
-                next_status,
-                Some(&serde_json::json!({})),
-                if next_status == TaskStatus::Failed {
-                    Some("follow-up unavailable")
-                } else {
-                    None
-                },
-                Some(&message),
-                &[AttachmentInput {
-                    id: image.id.clone(),
-                    name: image.name.clone(),
-                    media_type: image.media_type.clone(),
-                    kind: AttachmentKind::Image,
-                    bytes: image.bytes.clone(),
-                }],
-            )
-            .unwrap();
-        let saved = storage
-            .list_messages("a")
-            .unwrap()
-            .into_iter()
-            .find(|m| m.id == "image-answer")
-            .unwrap();
-        let summary: Vec<crowclaw_desktop_lib::storage::attachments::AttachmentSummary> =
-            serde_json::from_value(saved.metadata["attachments"].clone()).unwrap();
-        assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].message_id.as_deref(), Some("image-answer"));
-        let retained = storage.message_attachments("a", "image-answer").unwrap();
-        assert_eq!(retained[0].bytes, image.bytes);
-        assert_eq!(retained[0].summary, summary[0]);
+    let png=GeneratedImage{id:"generated-image".into(),name:"crowclaw-image-test.png".into(),media_type:"image/png".into(),model:"gpt-image-2".into(),bytes:STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XioAAAAASUVORK5CYII=").unwrap()};
+    let jpeg=GeneratedImage{id:"generated-image".into(),name:"crowclaw-image-test.jpg".into(),media_type:"image/jpeg".into(),model:"crowbot-auto".into(),bytes:STANDARD.decode("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD8qqKKKAP/2Q==").unwrap()};
+    for image in [png, jpeg] {
+        for next_status in [TaskStatus::Succeeded, TaskStatus::Failed] {
+            let (dir, storage) = setup();
+            storage
+                .create_task(&TaskInput {
+                    id: "image-task".into(),
+                    conversation_id: Some("a".into()),
+                    kind: "agent-turn".into(),
+                    payload: serde_json::json!({}),
+                })
+                .unwrap();
+            storage
+                .update_task_status("image-task", TaskStatus::Running, None, None)
+                .unwrap();
+            let message = MessageInput {
+                id: "image-answer".into(),
+                conversation_id: "a".into(),
+                role: MessageRole::Assistant,
+                content: "Generated it.".into(),
+                metadata: serde_json::json!({"reportedModel":"gpt-6-luna"}),
+            };
+            storage
+                .finish_task_with_generated_images(
+                    "image-task",
+                    next_status,
+                    Some(&serde_json::json!({})),
+                    if next_status == TaskStatus::Failed {
+                        Some("follow-up unavailable")
+                    } else {
+                        None
+                    },
+                    Some(&message),
+                    &[AttachmentInput {
+                        id: image.id.clone(),
+                        name: image.name.clone(),
+                        media_type: image.media_type.clone(),
+                        kind: AttachmentKind::Image,
+                        bytes: image.bytes.clone(),
+                    }],
+                )
+                .unwrap();
+            let saved = storage
+                .list_messages("a")
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == "image-answer")
+                .unwrap();
+            let summary: Vec<crowclaw_desktop_lib::storage::attachments::AttachmentSummary> =
+                serde_json::from_value(saved.metadata["attachments"].clone()).unwrap();
+            assert_eq!(summary.len(), 1);
+            assert_eq!(summary[0].message_id.as_deref(), Some("image-answer"));
+            let retained = storage.message_attachments("a", "image-answer").unwrap();
+            assert_eq!(retained[0].bytes, image.bytes);
+            assert_eq!(retained[0].summary, summary[0]);
+            drop(storage);
+            let reopened = Storage::open(dir.path()).unwrap();
+            let after_restart = reopened.message_attachments("a", "image-answer").unwrap();
+            assert_eq!(after_restart[0].bytes, image.bytes);
+            assert_eq!(after_restart[0].summary.media_type, image.media_type);
+        }
     }
 }
 

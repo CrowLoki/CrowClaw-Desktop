@@ -224,13 +224,29 @@ impl Storage {
         }
         for image in generated_images {
             super::attachments::validate(image)?;
-            if image.kind != super::attachments::AttachmentKind::Image
-                || image.media_type != "image/png"
-                || image.bytes.len() < 24
-                || !image.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-            {
+            let matches_type = match image.media_type.as_str() {
+                "image/png" => {
+                    image.bytes.len() >= 24 && image.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                }
+                "image/jpeg" => {
+                    image.bytes.len() >= 12
+                        && image.bytes.starts_with(&[0xff, 0xd8, 0xff])
+                        && image.bytes.ends_with(&[0xff, 0xd9])
+                }
+                "image/webp" => {
+                    image.bytes.len() >= 12
+                        && &image.bytes[..4] == b"RIFF"
+                        && &image.bytes[8..12] == b"WEBP"
+                        && u32::from_le_bytes(image.bytes[4..8].try_into().expect("fixed header"))
+                            as usize
+                            + 8
+                            == image.bytes.len()
+                }
+                _ => false,
+            };
+            if image.kind != super::attachments::AttachmentKind::Image || !matches_type {
                 return Err(StorageError::InvalidData(
-                    "Generated image is not a PNG".into(),
+                    "Generated image bytes do not match a supported PNG, JPEG or WebP type".into(),
                 ));
             }
         }

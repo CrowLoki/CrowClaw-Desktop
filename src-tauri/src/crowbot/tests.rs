@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::{AssistantToolCall, ToolDefinition};
+use crate::tools::ImageGenerationBackend;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -50,6 +51,44 @@ fn action_framing_keeps_actual_latest_user_request_salient_and_complete() {
         prepared.messages[1].content.as_deref(),
         Some("Synthetic local personality.")
     );
+}
+
+#[test]
+fn completed_tool_is_current_result_not_a_new_user_request_and_new_turn_resets_phase() {
+    let result=json!({"state":"executed","output":{"type":"generated_image","image":{"id":"already-generated","model":"crowbot-auto"}}}).to_string();
+    let mut input = request(vec![
+        ChatMessage::user("create an image of a cat"),
+        ChatMessage::tool("call-1", "generate_image", &result),
+    ]);
+    input
+        .tools
+        .push(crate::crowbot::images::CrowBotImageGenerator::new().tool_definition());
+    let (prepared, _) = prepare_agent_request(input.clone()).unwrap();
+    let instruction = prepared
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .as_deref()
+        .unwrap();
+    assert!(instruction.contains("POST-ACTION PHASE"));
+    assert!(instruction.contains("already-generated"));
+    assert_eq!(
+        prepared.messages[2].content.as_deref(),
+        Some(result.as_str())
+    );
+    input
+        .messages
+        .push(ChatMessage::user("create a new image of a dog"));
+    let (new_turn, _) = prepare_agent_request(input).unwrap();
+    assert!(!new_turn
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .as_deref()
+        .unwrap()
+        .contains("POST-ACTION PHASE"));
 }
 
 #[tokio::test]

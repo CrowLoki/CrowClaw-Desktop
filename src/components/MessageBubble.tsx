@@ -48,7 +48,7 @@ export function MessageBubble({ message, previewAttachment }: MessageBubbleProps
         </div>
         <p>{message.content}</p>
         {!!message.attachments?.length && previewAttachment && <ul className="file-attachments" role="list" aria-label="Sent attachments">
-          {message.attachments.map(attachment => <li key={attachment.id}><AttachmentPreview attachment={attachment} previewAttachment={previewAttachment} /></li>)}
+          {message.attachments.map(attachment => <li key={attachment.id}><AttachmentPreview attachment={attachment} previewAttachment={previewAttachment} autoPreview={message.role === 'assistant' && attachment.kind === 'image'} /></li>)}
         </ul>}
         {assistant && message.status !== "streaming" && (
           <button className="message-copy" type="button" onClick={() => void copyMessage()} aria-label="Copy response">

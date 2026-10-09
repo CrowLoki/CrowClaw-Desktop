@@ -168,7 +168,7 @@ export type CrowQuantSearchHit = {
   score: number;
 };
 
-export type PermissionMode = "ask" | "allow-session" | "deny";
+export type PermissionMode = "ask" | "allow" | "allow-session" | "deny";
 
 export type EmbeddingProfile = { provider: "openai" | "ollama"; baseUrl: string; model: string; dimensions: number };
 export type MemorySettings = { indexConversations: boolean | null; indexActions: boolean; embedding?: EmbeddingProfile | null };
@@ -186,6 +186,7 @@ export type MemoryIndexReport = { indexed: number; skipped: number; pending: num
 export type SemanticIndexReport = { indexed: number; pending: number; warnings: string[] };
 
 export type AppSettings = {
+  confirmImageGeneration?: boolean;
   personalities?:Array<{id:string;name:string;instruction:string}>;
   selectedPersonality?:string|null;
   permissions: {

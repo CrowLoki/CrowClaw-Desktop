@@ -24,6 +24,9 @@ use super::{
 
 #[async_trait::async_trait]
 pub trait ImageGenerationBackend: Send + Sync {
+    fn tool_definition(&self) -> crate::agent::ToolDefinition {
+        super::image_generation_tool_definition()
+    }
     async fn generate(
         &self,
         prompt: &str,
@@ -101,6 +104,9 @@ pub struct ToolExecutor {
     approvals: Arc<ApprovalRegistry>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
     image_generator: Option<Arc<dyn ImageGenerationBackend>>,
+    automatic_images: bool,
+    automatic_tools: Vec<String>,
+    denied_tools: Vec<String>,
 }
 
 impl ToolExecutor {
@@ -111,6 +117,9 @@ impl ToolExecutor {
             approvals: Arc::new(ApprovalRegistry::default()),
             memory_backend: None,
             image_generator: None,
+            automatic_images: false,
+            automatic_tools: Vec::new(),
+            denied_tools: Vec::new(),
         })
     }
 
@@ -124,8 +133,53 @@ impl ToolExecutor {
         self
     }
 
+    pub fn with_automatic_images(mut self, automatic: bool) -> Self {
+        self.automatic_images = automatic;
+        self
+    }
+
+    pub fn automatically_runs(&self, request: &ToolRequest) -> bool {
+        (self.automatic_images && matches!(request, ToolRequest::GenerateImage { .. }))
+            || self
+                .automatic_tools
+                .iter()
+                .any(|name| name == request.tool_name())
+    }
+
+    pub fn with_automatic_tools(mut self, names: Vec<String>) -> Self {
+        self.automatic_tools = names;
+        self
+    }
+
+    pub fn with_denied_tools(mut self, names: Vec<String>) -> Self {
+        self.denied_tools = names;
+        self
+    }
+
+    pub fn automatic_decision(&self, request: &ToolRequest) -> Option<ApprovalDecision> {
+        if self
+            .denied_tools
+            .iter()
+            .any(|name| name == request.tool_name())
+        {
+            Some(ApprovalDecision::Deny {
+                reason: Some("Denied by the owner's saved operation preference".into()),
+            })
+        } else if self.automatically_runs(request) {
+            Some(ApprovalDecision::Approve)
+        } else {
+            None
+        }
+    }
+
     pub fn image_generation_available(&self) -> bool {
         self.image_generator.is_some()
+    }
+
+    pub fn image_generation_definition(&self) -> Option<crate::agent::ToolDefinition> {
+        self.image_generator
+            .as_ref()
+            .map(|backend| backend.tool_definition())
     }
 
     pub fn policy(&self) -> &ToolPolicy {

@@ -9,6 +9,7 @@ type SettingsViewProps = {
 };
 
 const permissionOptions: Array<{ value: PermissionMode; label: string }> = [
+  { value: "allow", label: "Allow automatically" },
   { value: "ask", label: "Ask every time" },
   { value: "deny", label: "Always deny" },
 ];
@@ -54,6 +55,14 @@ export function SettingsView({ settings, onSave, membership }: SettingsViewProps
       </header>
 
       {membership}
+      <section className="settings-panel" aria-labelledby="image-generation-title">
+        <h2 id="image-generation-title">Image generation</h2>
+        <label className="setting-row" htmlFor="confirm-image-generation">
+          <span><strong>Ask before generating images</strong><small>Optional. Off by default: asking for a picture runs generation directly.</small></span>
+          <input id="confirm-image-generation" name="confirmImageGeneration" type="checkbox" checked={draft.confirmImageGeneration??false} disabled={saving}
+            onChange={event=>{setDraft(current=>({...current,confirmImageGeneration:event.target.checked}));setSaved(false);}} />
+        </label>
+      </section>
       <section className="settings-panel" aria-labelledby="personality-title">
         <h2 id="personality-title">Personality</h2>
         <p>Choose the voice and character used for future replies. This does not change your model, account or action permissions.</p>
@@ -72,7 +81,8 @@ export function SettingsView({ settings, onSave, membership }: SettingsViewProps
         </div>
         <div className="permission-rows">
           <label className="setting-row"><span><strong>Read local files</strong><small>Inspect files you deliberately select</small></span><select value={draft.permissions.readFiles} onChange={(event) => setPermission("readFiles", event.currentTarget.value as PermissionMode)}>{permissionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-          <label className="setting-row"><span><strong>Run local commands</strong><small>Execute a command shown in the approval request</small></span><select value={draft.permissions.runCommands} onChange={(event) => setPermission("runCommands", event.currentTarget.value as PermissionMode)}>{permissionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="setting-row"><span><strong>Run local commands</strong><small>Use your saved choice for requested command execution</small></span><select value={draft.permissions.runCommands} onChange={(event) => setPermission("runCommands", event.currentTarget.value as PermissionMode)}>{permissionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="setting-row"><span><strong>Remember local context</strong><small>Store requested context in CrowClaw memory</small></span><select value={draft.permissions.writeFiles} onChange={(event) => setPermission("writeFiles", event.currentTarget.value as PermissionMode)}>{permissionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         </div>
       </section>
 
