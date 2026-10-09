@@ -186,6 +186,8 @@ export type MemoryIndexReport = { indexed: number; skipped: number; pending: num
 export type SemanticIndexReport = { indexed: number; pending: number; warnings: string[] };
 
 export type AppSettings = {
+  personalities?:Array<{id:string;name:string;instruction:string}>;
+  selectedPersonality?:string|null;
   permissions: {
     readFiles: PermissionMode;
     writeFiles: PermissionMode;

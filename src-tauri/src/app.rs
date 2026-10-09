@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub mod attachments;
 pub mod composer;
 pub mod openrouter;
+mod personalities;
 
 fn image_enabled_tool_executor(
     state: &AppState,
@@ -1308,6 +1309,10 @@ pub struct AppSettings {
     keep_running_on_close: bool,
     retain_conversations: bool,
     theme: String,
+    #[serde(default)]
+    personalities: Vec<personalities::PersonalityProfile>,
+    #[serde(default)]
+    selected_personality: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -1322,6 +1327,8 @@ impl Default for AppSettings {
             keep_running_on_close: false,
             retain_conversations: true,
             theme: "dark".into(),
+            personalities: Vec::new(),
+            selected_personality: None,
         }
     }
 }
@@ -1914,6 +1921,9 @@ pub async fn crowclaw_chat_send(
     );
 
     let mut messages = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    if let Some(personality) = personalities::message(&settings)? {
+        messages.push(personality);
+    }
     let guideline_revision = state.evolution.active().map_err(display_error)?;
     if let Some(guideline) = guideline_message(&guideline_revision) {
         messages.push(guideline);
@@ -1990,6 +2000,7 @@ pub async fn crowclaw_chat_send(
                     "selectedFolderId": request.selected_folder.as_ref().map(|folder| &folder.id),
                     "prompt": content,
                     "guidelineRevision": guideline_revision.revision,
+                    "personalitySnapshot": settings.selected_personality.as_ref().and_then(|id|settings.personalities.iter().find(|p|&p.id==id)),
                 }),
             },
         )
@@ -2310,6 +2321,7 @@ pub fn crowclaw_settings_save(
     state: State<'_, AppState>,
     request: AppSettings,
 ) -> Result<AppSettings, String> {
+    personalities::validate(&request)?;
     state
         .storage
         .set_setting(SETTINGS_KEY, &request)

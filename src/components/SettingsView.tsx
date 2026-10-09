@@ -54,6 +54,18 @@ export function SettingsView({ settings, onSave, membership }: SettingsViewProps
       </header>
 
       {membership}
+      <section className="settings-panel" aria-labelledby="personality-title">
+        <h2 id="personality-title">Personality</h2>
+        <p>Choose the voice and character used for future replies. This does not change your model, account or action permissions.</p>
+        <label className="field" htmlFor="selected-personality">Selected personality</label>
+        <select id="selected-personality" name="selectedPersonality" value={draft.selectedPersonality??''} disabled={saving}
+          onChange={event=>{setDraft(current=>({...current,selectedPersonality:event.target.value||null}));setSaved(false);}}>
+          <option value="">CrowClaw standard</option>
+          {(draft.personalities??[]).map(p=><option value={p.id} key={p.id}>{p.name}</option>)}
+        </select>
+        <p>Personality instructions are stored in this local CrowClaw profile, not in the public installer.</p>
+        {draft.selectedPersonality&&<details><summary>Personality instructions</summary><p style={{whiteSpace:'pre-wrap'}}>{draft.personalities?.find(p=>p.id===draft.selectedPersonality)?.instruction}</p></details>}
+      </section>
       <section className="settings-panel" aria-labelledby="permissions-title">
         <div className="settings-panel__heading">
           <div><span className="settings-icon"><ShieldCheck size={18} /></span><div><h2 id="permissions-title">Action permissions</h2><p>These defaults never override an action-specific denial.</p></div></div>
